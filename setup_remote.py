@@ -140,10 +140,29 @@ pkgs = [
     "pulseaudio", "pulseaudio-utils",
     "vulkan-tools", "libvulkan1", "mesa-vulkan-drivers", "mesa-utils", "libgl1-mesa-dri", "libglvnd0",
     "ffmpeg", "libva2", "net-tools", "iproute2", "steam:i386", "tailscale", "tailscale-archive-keyring",
+    "libxtst6:i386", "libxrandr2:i386", "libxrender1:i386", "libgtk2.0-0t64:i386",
+    "libpipewire-0.3-0t64:i386", "libpulse0:i386", "libgdk-pixbuf-2.0-0:i386",
+    "libxcb-res0:i386", "libvdpau1:i386", "libbz2-1.0:i386", "dbus-x11",
     "/tmp/chrome.deb", "/tmp/cloudflared.deb", "/tmp/sunshine.deb"
 ]
 log("Executing unified APT package installation...")
 run(f"DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends {' '.join(pkgs)} >/dev/null 2>&1", check=False)
+
+# Bootstrap Steam to bypass zenity modal prompts and enable instant hardware 3D launch
+steam_dir = "/home/user/.steam/debian-installation"
+os.makedirs(f"{steam_dir}/deb-installer", exist_ok=True)
+os.makedirs("/home/user/.steam", exist_ok=True)
+run(f"ln -fns '{steam_dir}' /home/user/.steam/steam", check=False)
+run(f"ln -fns '{steam_dir}' /home/user/.steam/root", check=False)
+if not os.path.exists(f"{steam_dir}/bootstrap.tar.xz"):
+    run(f"curl -fsSL -o '{steam_dir}/deb-installer/steam.tar.gz' https://repo.steampowered.com/steam/archive/beta/steam_1.0.0.79.tar.gz", check=False)
+    run(f"tar -C '{steam_dir}/deb-installer' -zxf '{steam_dir}/deb-installer/steam.tar.gz' steam-launcher/bootstraplinux_ubuntu12_32.tar.xz", check=False)
+    run(f"mv '{steam_dir}/deb-installer/steam-launcher/bootstraplinux_ubuntu12_32.tar.xz' '{steam_dir}/bootstrap.tar.xz'", check=False)
+    run(f"tar -C '{steam_dir}' -xf '{steam_dir}/bootstrap.tar.xz'", check=False)
+    with open(f"{steam_dir}/deb-installer/version", "w") as f:
+        f.write("1.0.0.79\n")
+run("touch /home/user/.steam/steam_app_installed", check=False)
+run("chown -R user:user /home/user/.steam /home/user/.local", check=False)
 
 # Set up Moonlight Web
 if not os.path.exists("/opt/moonlight-web/web-server"):
@@ -297,11 +316,21 @@ run('su - user -c "export XDG_RUNTIME_DIR=/run/user/1001; pactl set-default-sink
 for ob_dir in ["/home/user/.config/openbox", "/root/.config/openbox"]:
     os.makedirs(ob_dir, exist_ok=True)
     with open(f"{ob_dir}/autostart", "w") as f:
-        f.write("#!/bin/sh\nfeh --bg-fill /home/user/nvidia-wallpaper.jpg &\n")
+        f.write("#!/bin/sh\nxset s off -dpms s noblank\nxset r rate 250 30\nfeh --bg-fill /home/user/nvidia-wallpaper.jpg &\n")
     run(f"chmod +x {ob_dir}/autostart", check=False)
 run("chown -R user:user /home/user/.config/openbox", check=False)
 
-run('su - user -c "DISPLAY=:1 nohup openbox > /home/user/openbox.log 2>&1 &"', check=False)
+openbox_env = (
+    'export DISPLAY=:1; '
+    'export XDG_RUNTIME_DIR=/run/user/1001; '
+    'export NO_AT_BRIDGE=1; '
+    'export GTK_IM_MODULE=xim; '
+    'export QT_IM_MODULE=xim; '
+    'export XMODIFIERS=@im=none; '
+)
+run(f'su - user -c "{openbox_env} nohup openbox > /home/user/openbox.log 2>&1 &"', check=False)
+run('DISPLAY=:1 xset s off -dpms s noblank >/dev/null 2>&1 || true', check=False)
+run('DISPLAY=:1 xset r rate 250 30 >/dev/null 2>&1 || true', check=False)
 run('su - user -c "DISPLAY=:1 feh --bg-fill /home/user/nvidia-wallpaper.jpg &"', check=False)
 run('DISPLAY=:1 feh --bg-fill /home/user/nvidia-wallpaper.jpg &', check=False)
 
@@ -394,7 +423,9 @@ apps_cfg = {
         {"name": "Desktop (1366x768 WXGA)", "cmd": "xrandr --output DVI-D-0 --mode 1360x768", "image-path": "", "auto-detach": "true"},
         {"name": "Desktop (1280x720 HD)", "cmd": "xrandr --output DVI-D-0 --mode 1280x720", "image-path": "", "auto-detach": "true"},
         {"name": "Google Chrome (WebGPU & 3D)", "cmd": f"/usr/bin/google-chrome-stable {gpu_flags} https://webgpu.github.io/webgpu-samples/", "image-path": ""},
-        {"name": "Steam", "cmd": "steam -silent -gamepadui", "image-path": ""}
+        {"name": "Steam", "cmd": "steam -silent -gamepadui", "image-path": ""},
+        {"name": "Vulkan 3D Test (vkcube)", "cmd": "vkcube", "image-path": ""},
+        {"name": "OpenGL 3D Test (glxgears)", "cmd": "glxgears -info", "image-path": ""}
     ]
 }
 with open("/root/.config/sunshine/apps.json", "w") as f:
@@ -411,6 +442,10 @@ sunshine_user_cmd = (
     'su - user -c "'
     'export DISPLAY=:1; '
     'export XDG_RUNTIME_DIR=/run/user/1001; '
+    'export NO_AT_BRIDGE=1; '
+    'export GTK_IM_MODULE=xim; '
+    'export QT_IM_MODULE=xim; '
+    'export XMODIFIERS=@im=none; '
     'nohup sunshine > /home/user/sunshine.log 2>&1 &"'
 )
 subprocess.run(sunshine_user_cmd, shell=True)

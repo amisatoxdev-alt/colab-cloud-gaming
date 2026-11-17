@@ -141,7 +141,10 @@ The script will:
 
 ### 4. Interactive Live Terminal Commands
 While the background keep-alive pulse keeps your GPU warm, you can run commands directly in the launcher prompt:
-- `/pair <PIN>` : Pair a new Moonlight client device instantly.
+- `/pair <PIN>` : Pair a new Moonlight client device instantly (e.g. `/pair 1234`).
+- `/cflink`     : Display all active Cloudflare public tunnel URLs.
+- `/accel`      : Live GPU verification card (OpenGL 4.6, Vulkan 1.4, NVENC, NvFBC).
+- `/unfreeze`   : Release any stuck Shift/Ctrl/Alt keys and unfreeze X11 input queue.
 - `/links`      : Re-print the dashboard of active streaming & desktop URLs.
 - `/status`     : Query real-time GPU telemetry, VRAM usage, and streaming sessions.
 - `/restart`    : Cleanly restart Sunshine & Openbox without resetting the Colab VM.
