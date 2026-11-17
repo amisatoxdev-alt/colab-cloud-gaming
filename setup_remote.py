@@ -441,5 +441,7 @@ links = {
 }
 with open("/var/log/services/links.json", "w") as f:
     json.dump(links, f, indent=2)
+with open("/tmp/links.json", "w") as f:
+    json.dump(links, f, indent=2)
 
 log("Deployment complete and all daemons initialized successfully.")
