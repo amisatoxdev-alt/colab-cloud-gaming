@@ -98,9 +98,10 @@ if driver_ver:
 # Symlink NVIDIA Xorg driver modules for hardware acceleration
 os.makedirs("/usr/lib/xorg/modules/drivers", exist_ok=True)
 os.makedirs("/usr/lib/xorg/modules/extensions", exist_ok=True)
-run("ln -sf /usr/lib64-nvidia/xorg/modules/drivers/nvidia_drv.so /usr/lib/xorg/modules/drivers/nvidia_drv.so", check=False)
-run("ln -sf /usr/lib64-nvidia/xorg/modules/extensions/libglxserver_nvidia.so /usr/lib/xorg/modules/extensions/libglxserver_nvidia.so", check=False)
-run("ln -sf /usr/lib64/xorg/modules/drivers/nvidia_drv.so /usr/lib/xorg/modules/drivers/nvidia_drv.so", check=False)
+if os.path.exists("/usr/lib64-nvidia/xorg/modules/drivers/nvidia_drv.so"):
+    run("ln -sf /usr/lib64-nvidia/xorg/modules/drivers/nvidia_drv.so /usr/lib/xorg/modules/drivers/nvidia_drv.so", check=False)
+if os.path.exists("/usr/lib64-nvidia/xorg/modules/extensions/libglxserver_nvidia.so"):
+    run("ln -sf /usr/lib64-nvidia/xorg/modules/extensions/libglxserver_nvidia.so /usr/lib/xorg/modules/extensions/libglxserver_nvidia.so", check=False)
 run("ldconfig", check=False)
 
 # 2.2 Download NVIDIA HD Wallpaper
@@ -109,9 +110,21 @@ wallpaper_path = "/root/nvidia-wallpaper.jpg"
 if not os.path.exists(wallpaper_path):
     run(f"wget -q https://wallpapercat.com/w/full/3/b/2/1255774-2500x1341-desktop-hd-nvidia-wallpaper-photo.jpg -O {wallpaper_path}", check=False)
 
-# 2.3 Setup dedicated user 'user'
-print("=== 2.3 Setting up user permissions ===", flush=True)
-run("id -u user || (useradd -m -s /bin/bash user && echo 'user:123456' | chpasswd && usermod -aG sudo,video,audio user)", check=False)
+# 2.3 Setup dedicated user 'user' & controller / uinput permissions
+print("=== 2.3 Setting up user permissions & gamepad device nodes ===", flush=True)
+run("groupadd -f input", check=False)
+run("id -u user || (useradd -m -s /bin/bash user && echo 'user:123456' | chpasswd)", check=False)
+run("usermod -aG sudo,video,audio,input user", check=False)
+
+# Virtual gamepad & input devices
+run("modprobe uinput 2>/dev/null || true", check=False)
+run("mknod /dev/uinput c 10 223 2>/dev/null || true", check=False)
+run("chmod 666 /dev/uinput", check=False)
+run("modprobe uhid 2>/dev/null || true", check=False)
+run("mknod /dev/uhid c 10 239 2>/dev/null || true", check=False)
+run("chmod 666 /dev/uhid", check=False)
+run("mkdir -p /dev/input && chmod 777 /dev/input", check=False)
+
 run("cp -f /root/nvidia-wallpaper.jpg /home/user/nvidia-wallpaper.jpg 2>/dev/null || true", check=False)
 run("chown user:user /home/user/nvidia-wallpaper.jpg", check=False)
 run("mkdir -p /run/user/1001/pulse && chown -R user:user /run/user/1001 && chmod 700 /run/user/1001", check=False)
@@ -275,9 +288,17 @@ run('su - user -c "export XDG_RUNTIME_DIR=/run/user/1001; pactl set-default-sink
 
 # 10.3 Openbox & NVIDIA Wallpaper
 print("--> Starting Openbox & Wallpaper...", flush=True)
+for ob_dir in ["/home/user/.config/openbox", "/root/.config/openbox"]:
+    os.makedirs(ob_dir, exist_ok=True)
+    with open(f"{ob_dir}/autostart", "w") as f:
+        f.write("#!/bin/sh\nfeh --bg-fill /home/user/nvidia-wallpaper.jpg &\n")
+    run(f"chmod +x {ob_dir}/autostart", check=False)
+run("chown -R user:user /home/user/.config/openbox", check=False)
+
 run('su - user -c "DISPLAY=:1 nohup openbox > /home/user/openbox.log 2>&1 &"', check=False)
 time.sleep(1)
-run('su - user -c "DISPLAY=:1 feh --bg-fill /home/user/nvidia-wallpaper.jpg 2>/dev/null || DISPLAY=:1 feh --bg-scale /home/user/nvidia-wallpaper.jpg &"', check=False)
+run('su - user -c "DISPLAY=:1 feh --bg-fill /home/user/nvidia-wallpaper.jpg &"', check=False)
+run('DISPLAY=:1 feh --bg-fill /home/user/nvidia-wallpaper.jpg &', check=False)
 
 # 10.4 Google Chrome Maximized with WebGPU Samples
 print("--> Starting Google Chrome (WebGPU & Vulkan)...", flush=True)
@@ -374,6 +395,10 @@ nvenc_realtime_hags = 0
 # --- Audio Latency & Sync ---
 audio_sink = sink-sunshine-stereo
 channels = 2
+
+# --- Controller & Gamepad Emulation ---
+controller = enabled
+gamepad = x360
 """
 with open("/root/.config/sunshine/sunshine.conf", "w") as f:
     f.write(sunshine_cfg)

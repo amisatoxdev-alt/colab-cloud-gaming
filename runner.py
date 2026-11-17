@@ -143,6 +143,8 @@ def main():
     if user_choice in ["", "y", "yes"]:
         ts_ip = check_and_wait_tailscale(links.get('tailscale_login_url'))
         if ts_ip:
+            print(f"[*] Synchronizing Sunshine with active Tailscale IP: {ts_ip}...", flush=True)
+            run_cmd(f"colab exec -s {SESSION_NAME} -f sync_ts_ip.py", capture=True)
             print("\n" + "-"*70)
             print(f"  --> Moonlight Host IP   : {ts_ip}")
             print(f"  --> Direct Sunshine URL : https://{ts_ip}:47990")

@@ -14,6 +14,8 @@ High-performance, ultra-low-latency game and desktop streaming on Google Colab (
 - [x] Low-latency NVENC P1 CBR streaming tuned for 6–8 Mbps with zero relay bufferbloat
 - [x] Low-latency PulseAudio audio subsystem (2ms fragment buffer, UID 1001 user isolation)
 - [x] Dynamic Cloudflare tunnel origin extraction to prevent Sunshine CSRF 403 errors
+- [x] Virtual gamepad & controller emulation (`/dev/uinput` Xbox 360 / DualShock mapping for Moonlight)
+- [x] Persistent NVIDIA desktop wallpaper via Openbox autostart
 - [x] Headless PyTorch 12MB VRAM GPU keepalive pulse loop to prevent Colab idle timeouts
 - [x] One-click Windows automation launchers (`start.bat`, `pair.bat`, `push.bat`)
 
@@ -150,6 +152,7 @@ To ensure stutter-free streaming over the relay:
 - `setup_remote.py`: Automated remote installation and service daemon configuration.
 - `pair.bat` / `pair.py`: One-click Moonlight pairing utility.
 - `check_ts.py`: Helper script to query remote Tailscale status and IP.
+- `sync_ts_ip.py`: Helper script to synchronize active Tailscale IP into Sunshine.
 - `read_links.py`: Helper script to extract tunnel URLs from remote logs.
 - `keepalive_code.py`: Headless PyTorch GPU keepalive snippet.
 - `push.bat`: One-click Git push script for repo maintenance.
