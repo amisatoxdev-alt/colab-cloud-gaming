@@ -16,6 +16,8 @@ High-performance, ultra-low-latency game and desktop streaming on Google Colab (
 - [x] Dynamic Cloudflare tunnel origin extraction to prevent Sunshine CSRF 403 errors
 - [x] Virtual gamepad & controller emulation (`/dev/uinput` Xbox 360 / DualShock mapping for Moonlight)
 - [x] Persistent NVIDIA desktop wallpaper via Openbox autostart
+- [x] Asynchronous multi-threaded parallel deployment engine (50%+ faster bootstrap)
+- [x] Interactive live CLI console (`/pair`, `/status`, `/restart`, `/links`, `/pulse`)
 - [x] Headless PyTorch 12MB VRAM GPU keepalive pulse loop to prevent Colab idle timeouts
 - [x] One-click Windows automation launchers (`start.bat`, `pair.bat`, `push.bat`)
 
@@ -130,13 +132,25 @@ The script will:
 
 ### 3. Pair Moonlight with Sunshine
 1. When you select the host in Moonlight, a 4-digit PIN is displayed.
-2. Double-click `pair.bat` and enter the 4-digit PIN:
-   ```cmd
-   pair.bat 1234
+2. In the active launcher window, simply type:
+   ```text
+   /pair 1234
    ```
+   *(Or double-click `pair.bat 1234` from Windows Explorer)*.
 3. Moonlight will pair immediately and display your desktop and applications.
 
-### 4. Recommended Moonlight Client Settings
+### 4. Interactive Live Terminal Commands
+While the background keep-alive pulse keeps your GPU warm, you can run commands directly in the launcher prompt:
+- `/pair <PIN>` : Pair a new Moonlight client device instantly.
+- `/links`      : Re-print the dashboard of active streaming & desktop URLs.
+- `/status`     : Query real-time GPU telemetry, VRAM usage, and streaming sessions.
+- `/restart`    : Cleanly restart Sunshine & Openbox without resetting the Colab VM.
+- `/tailscale`  : Query Tailscale connection state and Colab node IP.
+- `/pulse`      : Manually trigger an immediate PyTorch VRAM pulse.
+- `/help`       : Display the command menu.
+- `/exit`       : Cleanly stop keepalive and exit.
+
+### 5. Recommended Moonlight Client Settings
 To ensure stutter-free streaming over the relay:
 - **Resolution**: `1920x1080` or `1280x720` @ 60 FPS
 - **Bitrate**: `6.0 Mbps` to `8.0 Mbps` (avoids relay bufferbloat)
