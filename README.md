@@ -14,7 +14,7 @@ High-performance, ultra-low-latency game and desktop streaming on Google Colab (
 - [x] Low-latency NVENC P1 CBR streaming tuned for 6–8 Mbps with zero relay bufferbloat
 - [x] Low-latency PulseAudio audio subsystem (2ms fragment buffer, UID 1001 user isolation)
 - [x] Dynamic Cloudflare tunnel origin extraction to prevent Sunshine CSRF 403 errors
-- [x] Virtual gamepad & controller emulation (`/dev/uinput` Xbox 360 / DualShock mapping for Moonlight)
+- [x] Native ultra-low-latency X11 XTest mouse and keyboard input (0ms driverless input pipeline)
 - [x] Persistent NVIDIA desktop wallpaper via Openbox autostart
 - [x] Asynchronous multi-threaded parallel deployment engine (50%+ faster bootstrap)
 - [x] Interactive live CLI console (`/pair`, `/status`, `/restart`, `/links`, `/pulse`)

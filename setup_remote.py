@@ -65,18 +65,10 @@ for key, val in [
 ]:
     subprocess.run(f"sysctl -w {key}={val} 2>/dev/null || true", shell=True)
 
-# User permissions & Gamepad character device nodes (/dev/uinput, /dev/uhid)
-run("groupadd -f input", check=False)
+# User permissions
 run("id -u user >/dev/null 2>&1 || (useradd -m -s /bin/bash user && echo 'user:123456' | chpasswd)", check=False)
-run("usermod -aG sudo,video,audio,input user", check=False)
-
-run("modprobe uinput 2>/dev/null || true", check=False)
-run("mknod /dev/uinput c 10 223 2>/dev/null || true", check=False)
-run("chmod 666 /dev/uinput", check=False)
-run("modprobe uhid 2>/dev/null || true", check=False)
-run("mknod /dev/uhid c 10 239 2>/dev/null || true", check=False)
-run("chmod 666 /dev/uhid", check=False)
-run("mkdir -p /dev/input && chmod 777 /dev/input", check=False)
+run("usermod -aG sudo,video,audio user", check=False)
+run("rm -f /dev/uinput /dev/uhid", check=False)
 run("mkdir -p /run/user/1001/pulse && chown -R user:user /run/user/1001 && chmod 700 /run/user/1001", check=False)
 
 # Pre-accept Steam license and pre-configure Steam to avoid modal dialogs
@@ -389,9 +381,6 @@ nvenc_realtime_hags = 0
 
 audio_sink = sink-sunshine-stereo
 channels = 2
-
-controller = enabled
-gamepad = x360
 """
 with open("/root/.config/sunshine/sunshine.conf", "w") as f:
     f.write(sunshine_cfg)
