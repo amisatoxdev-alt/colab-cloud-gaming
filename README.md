@@ -190,7 +190,6 @@ The automated launcher will:
 ├── check_ts.py                 # Tailscale authorization status checker
 ├── read_links.py               # Active tunnel URL reader
 ├── keepalive_code.py           # 12MB VRAM GPU pulse script
-├── kmille_payload_decrypted.py # Decrypted source code of kmille's backend
-├── kmille_repo/                # Reference repository files
+├── push.bat                   # One-click Git push script
 └── README.md                   # Comprehensive documentation & engineering post-mortem
 ```
