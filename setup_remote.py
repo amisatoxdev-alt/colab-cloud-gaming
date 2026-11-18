@@ -23,7 +23,7 @@ os.makedirs("/var/log/tunnels", exist_ok=True)
 # -------------------------------------------------------------
 # 0. Asynchronous Parallel Downloads (Pre-fetching while apt runs)
 # -------------------------------------------------------------
-desktop_mode = os.environ.get("DESKTOP_MODE", "win11").lower()
+desktop_mode = os.environ.get("DESKTOP_MODE", "minimal").lower()
 if os.path.exists("/tmp/desktop_mode.txt"):
     try:
         desktop_mode = open("/tmp/desktop_mode.txt").read().strip().lower()

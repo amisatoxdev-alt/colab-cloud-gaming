@@ -81,33 +81,33 @@ def ask_startup_options():
 
     # 1. Hardware Shape Selection
     print(f"\n{C_CYAN}[1/2] Select Hardware Memory Profile:{C_RESET}")
-    print(f"  {C_GREEN}1{C_RESET}) {C_BOLD}Tesla T4 High-RAM{C_RESET} (~54GB RAM)   {C_MAGENTA}[Recommended for Compute Unit Accounts]{C_RESET}")
-    print(f"  {C_GREEN}2{C_RESET}) {C_BOLD}Tesla T4 Standard{C_RESET} (~12GB RAM)   {C_GRAY}[For Free Tier / Standard Accounts]{C_RESET}")
+    print(f"  {C_GREEN}1{C_RESET}) {C_BOLD}Tesla T4 Standard{C_RESET} (~12GB RAM)   {C_GREEN}[Default • Free Tier / Standard Accounts]{C_RESET}")
+    print(f"  {C_GREEN}2{C_RESET}) {C_BOLD}Tesla T4 High-RAM{C_RESET} (~54GB RAM)   {C_MAGENTA}[Requires Colab Pro/Compute Units]{C_RESET}")
     try:
         hw_choice = input(f"      {C_YELLOW}Select hardware [1 or 2, default: 1]: {C_RESET}").strip()
     except Exception:
         hw_choice = "1"
     
-    use_highmem = (hw_choice != "2")
+    use_highmem = (hw_choice == "2")
     hw_label = "Tesla T4 High-RAM (~54GB RAM)" if use_highmem else "Tesla T4 Standard (~12GB RAM)"
     log_ok(f"Selected Hardware: {C_BOLD}{hw_label}{C_RESET}")
 
     # 2. Desktop Mode Selection
     print(f"\n{C_CYAN}[2/2] Select Desktop Environment GUI:{C_RESET}")
-    print(f"  {C_GREEN}1{C_RESET}) {C_BOLD}Full Windows 11 Fluent GUI{C_RESET}     {C_CYAN}[Centered Taskbar, Start Menu, Desktop Icons, NVIDIA Wallpaper]{C_RESET}")
-    print(f"  {C_GREEN}2{C_RESET}) {C_BOLD}Pure Game Mode (No Desktop){C_RESET}    {C_YELLOW}[Maximum FPS, Ultra-Lean Openbox, Zero Overhead]{C_RESET}")
+    print(f"  {C_GREEN}1{C_RESET}) {C_BOLD}Pure Game Mode (No Desktop){C_RESET}    {C_GREEN}[Default • Maximum FPS, Ultra-Lean Openbox, Zero Overhead]{C_RESET}")
+    print(f"  {C_GREEN}2{C_RESET}) {C_BOLD}Full Windows 11 Fluent GUI{C_RESET}     {C_CYAN}[Centered Taskbar, Start Menu, Desktop Icons, NVIDIA Wallpaper]{C_RESET}")
     try:
         gui_choice = input(f"      {C_YELLOW}Select desktop mode [1 or 2, default: 1]: {C_RESET}").strip()
     except Exception:
         gui_choice = "1"
     
-    desktop_mode = "minimal" if gui_choice == "2" else "win11"
+    desktop_mode = "win11" if gui_choice == "2" else "minimal"
     mode_label = "Full Windows 11 Fluent GUI" if desktop_mode == "win11" else "Pure Game Mode (No Desktop)"
     log_ok(f"Selected Interface: {C_BOLD}{mode_label}{C_RESET}\n")
 
     return use_highmem, desktop_mode
 
-def ensure_session(use_highmem=True):
+def ensure_session(use_highmem=False):
     log_step("1/3", f"Checking Google Colab GPU session '{SESSION_NAME}'...")
     res = run_cmd("colab sessions", capture=True)
     if SESSION_NAME not in res.stdout:
@@ -128,7 +128,7 @@ def ensure_session(use_highmem=True):
     else:
         log_ok(f"Session '{SESSION_NAME}' is currently active.")
 
-def setup_environment(desktop_mode="win11"):
+def setup_environment(desktop_mode="minimal"):
     mode_desc = "Windows 11 Fluent GUI" if desktop_mode == "win11" else "Pure Game Mode"
     log_step("2/3", f"Deploying hardware environment ({mode_desc}, Xorg, NvFBC, WebGPU, Sunshine, Tunnels)...")
     
