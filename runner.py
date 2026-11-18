@@ -227,11 +227,13 @@ def print_dashboard(links, ts_ip=None):
     pad_right = total_inner - visual_len - pad_left
     header = f"{C_CYAN}│" + " " * pad_left + f"{C_WHITE}{C_BOLD}" + title + f"{C_CYAN}" + " " * pad_right + f"│{C_RESET}"
 
+    funnel_display = links.get('funnel_url', 'Run /funnel to enable')
     lines = [
         f"\n{top}",
         header,
         sep,
         make_card_row("Moonlight Host IP", ts_display, C_GREEN + C_BOLD),
+        make_card_row("Tailscale Funnel (Web)", funnel_display, C_GREEN + C_BOLD),
         make_card_row("Direct Sunshine URL", sunshine_ts, C_WHITE),
         make_card_row("Public Sunshine WebUI", links.get('sunshine_url', 'Pending'), C_WHITE),
         make_card_row("Sunshine Credentials", links.get('sunshine_creds', 'admin / Sunshine123!'), C_WHITE),
@@ -513,12 +515,45 @@ def trigger_pulse():
     else:
         print(f"[*] Pulse output: {out}")
 
+def setup_funnel():
+    print(f"\n{C_CYAN}[*] Configuring Tailscale Public Funnel (Low-Latency Moonlight Web for Friends)...{C_RESET}", flush=True)
+    res = run_cmd(f"colab exec -s {SESSION_NAME} -f start_ts_funnel.py", capture=True)
+    out = res.stdout.strip()
+    data = {}
+    for line in out.splitlines():
+        line = line.strip()
+        if line.startswith("{") and line.endswith("}"):
+            try:
+                data = json.loads(line)
+                break
+            except Exception:
+                pass
+    
+    status = data.get("status", "")
+    if status == "ACTIVE":
+        url = data.get("url", "")
+        log_ok("Tailscale Funnel is LIVE! Share this link with your friend:")
+        print(f"      {C_GREEN}{C_BOLD}{url}{C_RESET} (Public HTTPS, No Tailscale app needed!)\n")
+        return url
+    elif status == "AUTH_REQUIRED":
+        auth_url = data.get("auth_url", "")
+        dns_name = data.get("dns_name", "")
+        log_warn("Tailscale Funnel requires one-time approval in your Tailscale Admin console:")
+        print(f"      {C_WHITE}Approval URL       : {C_YELLOW}{C_BOLD}{auth_url}{C_RESET}")
+        print(f"      {C_WHITE}Friend Public Link : {C_GREEN}{C_BOLD}https://{dns_name}/{C_RESET}")
+        print(f"      {C_GRAY}(Open the Approval URL in your browser, click 'Enable Funnel', then run /funnel again){C_RESET}\n")
+        return f"https://{dns_name}/"
+    else:
+        log_warn(f"Tailscale Funnel response: {out}")
+        return None
+
 def show_help():
     help_text = f"""
 {C_CYAN}╭─────────────────────────────────────────────────────────────────────────────╮
 │                         {C_WHITE}{C_BOLD}COMMAND CONSOLE MANUAL{C_CYAN}                              │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  {C_GREEN}/pair <4-digit PIN>{C_CYAN} : {C_WHITE}Instantly pair Moonlight client (e.g. /pair 1234)   │
+│  {C_GREEN}/funnel{C_CYAN}             : {C_WHITE}Start Tailscale Funnel for friends (no app needed)   │
 │  {C_GREEN}/cflink{C_CYAN}             : {C_WHITE}Display all active Cloudflare public tunnel links    │
 │  {C_GREEN}/accel{C_CYAN}              : {C_WHITE}Verify OpenGL 4.6, Vulkan 1.4 & NVENC hardware accel │
 │  {C_GREEN}/unfreeze{C_CYAN}           : {C_WHITE}Release stuck Shift/Alt/Ctrl keys and unfreeze input │
@@ -624,6 +659,10 @@ def main():
                 show_status()
             elif cmd in ["/restart", "restart"]:
                 restart_services()
+            elif cmd in ["/funnel", "funnel", "/fn"]:
+                fn_url = setup_funnel()
+                if fn_url:
+                    latest_links['funnel_url'] = fn_url
             elif cmd in ["/tailscale", "/ts", "tailscale", "ts"]:
                 ts_ip = check_and_wait_tailscale(latest_links.get('tailscale_login_url'))
                 if ts_ip:

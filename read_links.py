@@ -62,6 +62,15 @@ try:
 except Exception:
     pass
 
+# 4. Check live Tailscale Funnel
+try:
+    fn_proc = subprocess.run("tailscale funnel status 2>/dev/null", shell=True, text=True, capture_output=True)
+    m = re.search(r'https://[^\s]+\.ts\.net', fn_proc.stdout)
+    if m:
+        links["funnel_url"] = m.group(0) + "/"
+except Exception:
+    pass
+
 # Ensure updated links.json is written back for persistence
 try:
     os.makedirs("/var/log/services", exist_ok=True)
