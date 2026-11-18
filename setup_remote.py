@@ -664,8 +664,8 @@ if desktop_mode == "win11":
     run(f'su - user -c "{openbox_env} nohup openbox > /home/user/openbox.log 2>&1 &"', check=False)
     run('DISPLAY=:1 xset s off -dpms s noblank >/dev/null 2>&1 || true', check=False)
     run('DISPLAY=:1 xset r rate 250 30 >/dev/null 2>&1 || true', check=False)
-    run(f'su - user -c "DISPLAY=:1 feh --bg-fill {wallpaper_file} &"', check=False)
-    run(f'DISPLAY=:1 feh --bg-fill {wallpaper_file} &', check=False)
+    run(f'su - user -c "DISPLAY=:1 nohup feh --bg-fill {wallpaper_file} > /home/user/feh.log 2>&1 < /dev/null &"', check=False)
+    run(f'DISPLAY=:1 nohup feh --bg-fill {wallpaper_file} > /tmp/feh_root.log 2>&1 < /dev/null', check=False)
     run(f'su - user -c "{openbox_env} nohup pcmanfm --desktop > /home/user/pcmanfm.log 2>&1 &"', check=False)
     run(f'su - user -c "{openbox_env} nohup picom -b --corner-radius 8 >/dev/null 2>&1 &"', check=False)
     run(f'su - user -c "{openbox_env} nohup tint2 > /home/user/tint2.log 2>&1 &"', check=False)
@@ -692,8 +692,8 @@ else:
     run(f'su - user -c "{openbox_env} nohup openbox > /home/user/openbox.log 2>&1 &"', check=False)
     run('DISPLAY=:1 xset s off -dpms s noblank >/dev/null 2>&1 || true', check=False)
     run('DISPLAY=:1 xset r rate 250 30 >/dev/null 2>&1 || true', check=False)
-    run(f'su - user -c "DISPLAY=:1 feh --bg-fill {wallpaper_file} &"', check=False)
-    run(f'DISPLAY=:1 feh --bg-fill {wallpaper_file} &', check=False)
+    run(f'su - user -c "DISPLAY=:1 nohup feh --bg-fill {wallpaper_file} > /home/user/feh.log 2>&1 < /dev/null &"', check=False)
+    run(f'DISPLAY=:1 nohup feh --bg-fill {wallpaper_file} > /tmp/feh_root.log 2>&1 < /dev/null', check=False)
 
 # 5.4 Google Chrome & noVNC
 spawn_daemon(["x11vnc", "-display", ":1", "-nopw", "-forever", "-shared", "-rfbport", "5900", "-listen", "127.0.0.1"], "x11vnc.log")

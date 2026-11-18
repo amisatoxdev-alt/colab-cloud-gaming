@@ -58,8 +58,15 @@ sunshine_cmd = (
 )
 subprocess.run(sunshine_cmd, shell=True)
 
-# Re-apply wallpaper
-subprocess.run('su - user -c "DISPLAY=:1 feh --bg-fill /home/user/nvidia-wallpaper.jpg &"', shell=True)
-subprocess.run('DISPLAY=:1 feh --bg-fill /home/user/nvidia-wallpaper.jpg &', shell=True)
+# Re-apply wallpaper.
+# Every backgrounded process MUST redirect stdout/stderr to a file. The kernel
+# keeps a cell open until all writers to its output pipe are gone, so a bare
+# `feh ... &` leaves the cell (and therefore every later `colab exec`) waiting
+# forever -- that is what wedged this script and froze the launcher. Redirect,
+# and close stdin, so nothing can inherit the kernel's streams.
+subprocess.run('su - user -c "DISPLAY=:1 nohup feh --bg-fill /home/user/nvidia-wallpaper.jpg '
+               '> /home/user/feh.log 2>&1 < /dev/null &"', shell=True)
+subprocess.run('DISPLAY=:1 nohup feh --bg-fill /home/user/nvidia-wallpaper.jpg '
+               '> /tmp/feh_root.log 2>&1 < /dev/null', shell=True)
 
 print(f"[OK] Sunshine synchronized with Tailscale IP {ts_ip} and restarted successfully.")

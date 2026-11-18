@@ -1253,13 +1253,21 @@ def keep_alive_worker():
         if not EXEC_LOCK.acquire(blocking=False):
             continue
         try:
-            cmd = f"colab exec -s {SESSION_NAME} --timeout 20 -f keepalive_code.py"
-            res = run_cmd(cmd, capture=True, timeout=120)
-            out = (res.stdout or "").strip()
+            # --timeout 20 was too tight: a cold `import torch` on a fresh kernel
+            # prints nothing for 20-40s, so the CLI abandoned a cell that was
+            # still running. That orphan then owned the kernel and every later
+            # exec queued behind it forever. keepalive_code.py now prints before
+            # importing torch, and the idle window is generous.
+            cmd = f"colab exec -s {SESSION_NAME} --timeout 60 -f keepalive_code.py"
+            res = run_cmd(cmd, capture=True, timeout=180)
+            out = (res.stdout or "") + (res.stderr or "")
             if "Keep-Alive Pulse" in out:
                 t_str = time.strftime("%H:%M:%S")
                 print(f"\n{C_GRAY}[{t_str}] ⚡ VRAM Pulse Active (~12MB tensor warm){C_RESET}\n{C_CYAN}[colab-gaming] > {C_RESET}", end="", flush=True)
-            elif res.returncode == 124:
+            elif res.returncode != 0:
+                # Any failure leaves the kernel suspect. The CLI exits 1 (not 124)
+                # when it abandons a cell, so keying recovery off 124 alone never
+                # fired and the wedge survived every subsequent pulse.
                 _reset_kernel()
         except Exception:
             pass
