@@ -44,89 +44,79 @@ latest_links = {}
 # -------------------------------------------------------------
 # Region targeting
 # -------------------------------------------------------------
-# `colab new` has NO region/zone flag. The region is assigned by Google and is
-# only visible in the runtime id, e.g.  gpu-t4-s-use1c0-20wkgj02nzmwr
-#                                              ^^^^^  = us-east1
-# The only way to change region is to STOP the session and allocate again, so
-# we reallocate in a loop until the requested region family shows up.
-REGION_FAMILIES = {
-    # family token -> (region key, friendly zone)
-    "use1":  ("us", "us-east1"),
-    "use2":  ("us", "us-east2"),
-    "use4":  ("us", "us-east4"),
-    "usc1":  ("us", "us-central1"),
-    "usw1":  ("us", "us-west1"),
-    "usw2":  ("us", "us-west2"),
-    "usw4":  ("us", "us-west4"),
-    "euw1":  ("eu", "europe-west1"),
-    "euw2":  ("eu", "europe-west2"),
-    "euw3":  ("eu", "europe-west3"),
-    "euw4":  ("eu", "europe-west4"),
-    "euw12": ("eu", "europe-west12"),
-    "euc1":  ("eu", "europe-central2"),
-    "asse1": ("sg", "asia-southeast1"),
-    "asse2": ("sg", "asia-southeast2"),
-    "apse1": ("sg", "asia-southeast1"),
-    "apse2": ("sg", "asia-southeast2"),
-}
-
+# `colab new` has NO region/zone flag: Google assigns the zone per allocation.
+# The zone is authoritative in the runtime URL, e.g.
+#   https://8080-gpu-t4-s-ass1c2-222r7xhmk9xse-c.asia-southeast1.prod.r.colab.dev
+#                                                 ^^^^^^^^^^^^^^^^^ region
+# The runtime id abbreviation is NOT a reliable source -- `ass1c2` is
+# asia-southeast1, but it does not match the `asse1` spelling you would guess,
+# so guessing from the id reported a perfectly good Singapore VM as "unknown".
+# colab_zone.py reads the URL out of the local store instead.
 REGION_LABELS = {
-    "auto": "Auto — prefer Singapore, fall back to any",
+    "auto": "Auto — Singapore first, fall back to any region",
     "us":   "United States (us-east / us-west / us-central)",
     "sg":   "Singapore (asia-southeast1)",
     "eu":   "Europe (europe-west)",
     "any":  "Any region (fastest allocation)",
 }
 
+# Families we are willing to re-allocate for. Anything else (a zone we have
+# never seen) is treated as "unknown" and never triggers a retry storm.
+VALID_FAMILIES = ("sg", "us", "eu")
+
 REGION_MAX_ATTEMPTS = 8
 REGION_PREFERENCE = "auto"
 
 
-def parse_session_id(text, session=SESSION_NAME):
-    """Extract the runtime id for `session` from `colab sessions` output."""
-    m = re.search(rf"\[{re.escape(session)}\]\s+(\S+)", text or "")
-    return m.group(1) if m else None
+def family_of_zone(zone):
+    """GCP region name -> launcher family ('sg' | 'us' | 'eu' | '')."""
+    z = (zone or "").strip().lower()
+    if z.startswith("asia-southeast"):
+        return "sg"
+    if z.startswith(("us-east", "us-west", "us-central")):
+        return "us"
+    if z.startswith("europe-"):
+        return "eu"
+    return ""
 
 
-def region_of(runtime_id):
-    """Map a runtime id to (region_key, zone) or (None, None) if unknown."""
-    if not runtime_id:
-        return None, None
-    parts = runtime_id.split("-")
-    for tok in parts:
-        m = re.match(r"([a-z]+\d+)", tok)
-        if not m:
-            continue
-        fam = m.group(1)
-        if fam in REGION_FAMILIES:
-            return REGION_FAMILIES[fam]
-    return None, None
+def zone_info():
+    """(family, zone, endpoint) read from the live session via colab_zone.py."""
+    r = run_cmd(f"{sys.executable} colab_zone.py --name {SESSION_NAME}",
+                capture=True)
+    out = (r.stdout or "").strip()
+    for line in reversed(out.splitlines()):
+        line = line.strip()
+        if line.startswith("{") and line.endswith("}"):
+            try:
+                d = json.loads(line)
+            except Exception:
+                continue
+            return d.get("family") or "", d.get("zone") or "", d.get("endpoint") or ""
+    return "", "", ""
 
 
 def current_session_region():
-    """Live (region_key, zone, runtime_id) for the active session."""
-    out = run_cmd("colab sessions", capture=True).stdout or ""
-    m = re.search(r"^\[[^\]]*\]\s+(\S+)", out.strip(), re.MULTILINE)
-    rid = m.group(1) if m else None
-    rk, zone = region_of(rid)
-    return rk, zone, rid
+    """(family, zone, endpoint) for the active session; ('','','') if none."""
+    return zone_info()
 
 
 def stop_session():
-    """Stop the named session; True when it is gone from the server."""
-    before = run_cmd("colab sessions", capture=True).stdout or ""
-    if not re.search(r"^\[[^\]]+\]", before.strip(), re.MULTILINE):
+    """Stop the named session; True when no assignment is left behind.
+
+    `colab stop` is the only non-destructive teardown, and it needs a local
+    name. If it cannot find ours, the assignment is freed through the API.
+    """
+    rows = server_assignments()
+    if not rows:
         log_ok(f"No active session '{SESSION_NAME}' to stop.")
         return True
 
     res = run_cmd(f"colab stop -s {SESSION_NAME}", capture=True)
     out = (res.stdout or "") + (res.stderr or "")
-    if "not found" in out.lower():
-        # Named stop failed -> likely an orphan the local store cannot resolve.
+    if "not found" in out.lower() or "not addressable" in out.lower():
         free_orphans()
-    if not re.search(r"^\[[^\]]+\]",
-                     (run_cmd("colab sessions", capture=True).stdout or "").strip(),
-                     re.MULTILINE):
+    if not server_assignments():
         log_ok(f"Stopped session '{SESSION_NAME}'.")
         return True
     log_warn(f"Session still present after stop: {out.strip()[:160]}")
@@ -250,235 +240,362 @@ def install_gta_v():
     else:
         log_ok("GTA V installed and added to Steam.")
 
-def session_name():
+def _session_rows():
     """
-    The session's own name as the CLI reports it, or None.
+    Parse `colab sessions` into [(name_or_None, endpoint, hardware)].
 
-    MUST be parsed from the '[...]' prefix, never by substring search:
-    SESSION_NAME == 't4' is a substring of 'gpu-t4-s-...' and of 'Hardware: T4',
-    so `'t4' in output` always matches and makes the launcher believe a session
-    exists when only an orphaned/[] assignment is present.
+    A row looks like:
+      [t4] gpu-t4-s-ass1c2-222r7xhmk9xse | Hardware: T4 | Shape: Standard | Variant: GPU
+      [?]  gpu-t4-s-usw4b1-z2tzc3fin5zv | Hardware: T4 | ...
+
+    name is None when the CLI printed '?' (server assignment with no local
+    name) or '' -- those rows are NOT addressable by `colab exec -s ...`.
+
+    The CLI's own log lines share the same bracket shape, e.g. with no
+    sessions `colab sessions` prints `[colab] No sessions found.` -- which
+    naively parses as name='colab', endpoint='No'. That phantom row made
+    has_any_session() permanently true: allocation never ran for 8 attempts and
+    stop_session() reported failure after a successful stop. A genuine row
+    always carries a runtime endpoint (`gpu-...` / `tpu-...`) or a
+    `Hardware:` field; log lines carry neither.
     """
     out = run_cmd("colab sessions", capture=True).stdout or ""
-    m = re.search(r"^\[([^\]]*)\]", out.strip(), re.MULTILINE)
-    if not m:
-        return None
-    name = m.group(1).strip()
-    # '?' is what the CLI prints for a server assignment it cannot map to a
-    # local name -- it is NOT usable as a session name.
-    return None if name in ("?", "") else name
+    rows = []
+    for line in out.splitlines():
+        m = re.match(r"^\[([^\]]*)\]\s+(\S+)", line.strip())
+        if not m:
+            continue
+        raw = m.group(1).strip()
+        endpoint = m.group(2)
+        hw = ""
+        hm = re.search(r"Hardware:\s*(\S+)", line)
+        if hm:
+            hw = hm.group(1)
+        if not hw and not re.match(r"^(gpu|tpu)-", endpoint):
+            continue  # a CLI log line, not a runtime assignment
+        rows.append((None if raw in ("", "?") else raw, endpoint, hw))
+    return rows
 
 
-def session_is_named():
-    """True only when a session with exactly our SESSION_NAME exists."""
-    return session_name() == SESSION_NAME
+def server_assignments():
+    """Endpoint list of every assignment the server reports (named or not)."""
+    return [r[1] for r in _session_rows()]
 
 
 def has_any_session():
-    """True when any assignment is visible, even an unnamed orphan."""
-    out = run_cmd("colab sessions", capture=True).stdout or ""
-    return bool(re.search(r"^\[[^\]]+\]", out.strip(), re.MULTILINE))
+    """True when any assignment is visible, even one we cannot address."""
+    return bool(_session_rows())
+
+
+def session_name():
+    """
+    Our session's own name as the CLI reports it, or None.
+
+    Parsed from the '[...]' prefix, never by substring search: SESSION_NAME
+    ('t4') is a substring of 'gpu-t4-s-...' and of 'Hardware: T4', so
+    `'t4' in output` always matched and made the launcher believe a session
+    existed when it did not.
+    """
+    for name, _endpoint, _hw in _session_rows():
+        if name:
+            return name
+    return None
+
+
+def session_is_named():
+    """True only when an assignment is registered under exactly SESSION_NAME."""
+    return any(name == SESSION_NAME for name, _e, _h in _session_rows())
+
+
+def needs_adoption():
+    """True when a live assignment exists but is not under SESSION_NAME."""
+    rows = _session_rows()
+    if not rows:
+        return False
+    return not any(name == SESSION_NAME for name, _e, _h in rows)
+
+
+def adopt_orphans():
+    """
+    Re-register a live assignment under SESSION_NAME instead of destroying it.
+
+    Two shapes end up here, and the old code only handled the first:
+      * `[?] <endpoint>`  -- nothing in the local store at all;
+      * `[abc123] <endpoint>` -- a leftover name from an earlier `colab new`
+        that was run without `-s`.
+    In both cases `colab exec -s t4` fails with "Session 't4' not found" and
+    `colab stop -s t4` cannot release it, even though the VM is alive. The old
+    check only looked for `[?]`, so a leftover *named* session was reported as
+    "cannot be adopted" forever -- that is the repeated-warning bug.
+
+    Returns True when a usable, locally-named session exists afterwards.
+    """
+    if session_is_named():
+        return True
+    if not needs_adoption():
+        return False
+
+    for name, endpoint, hw in _session_rows():
+        log_warn(f"Live Colab VM {endpoint} ({hw or 'unknown'}) is registered "
+                 f"as '{name or '<unnamed>'}' — adopting it as "
+                 f"'{SESSION_NAME}' instead of deleting it...")
+
+    r = run_cmd(f'{sys.executable} colab_adopt.py --name {SESSION_NAME}',
+                capture=True)
+    body = ((r.stdout or "") + (r.stderr or "")).strip()
+    for line in body.splitlines():
+        print(f"      {C_GRAY}{line}{C_RESET}", flush=True)
+    return session_is_named()
 
 
 def free_orphans():
     """
-    Release server-side assignments the CLI cannot name.
+    Release server assignments so `colab new` can run cleanly.
 
-    After an interrupted re-allocation the server can keep an assignment while
-    the local sessions.json is empty, so `colab sessions` prints '[?]'. `colab
-    stop` resolves names through the local store and answers "not found", and a
-    new allocation is refused with 'precondition failed'. colab_free.py talks to
-    the client API directly (unassign(endpoint)) to clear it.
+    DESTRUCTIVE: unassign() destroys the VM. Every assignment except the one
+    tracked as SESSION_NAME is released, because Colab answers `colab new`
+    with `412 precondition failed` while a stale assignment exists. Call this
+    only when a fresh allocation is genuinely wanted -- use adopt_orphans()
+    when the goal is merely to reach a VM that is already running.
     """
-    out = run_cmd("colab sessions", capture=True).stdout or ""
-    if not re.search(r"^\[\?\]", out.strip(), re.MULTILINE):
+    if not server_assignments():
         return True
-    log_warn("Found an orphaned Colab assignment the CLI cannot address "
-             f"(printed as '[?]'). Releasing it...")
-    r = run_cmd(f"{sys.executable} colab_free.py --free", capture=True)
+    log_warn("Releasing stale Colab assignment(s) so allocation can proceed...")
+    r = run_cmd(f"{sys.executable} colab_free.py --free --name {SESSION_NAME}",
+                capture=True)
     print(f"      {C_GRAY}{((r.stdout or '') + (r.stderr or '')).strip()}{C_RESET}",
           flush=True)
-    return not re.search(r"^\[\?\]", run_cmd("colab sessions",
-                                             capture=True).stdout or "",
-                         re.MULTILINE)
+    return not server_assignments()
 
 
 def ensure_session(use_highmem=False):
     log_step("1/4", f"Checking Google Colab GPU session '{SESSION_NAME}'...")
-    free_orphans()
+    adopt_orphans()
 
     if not session_is_named():
         alloc = allocate_session(use_highmem)
         if not alloc:
-            log_err("Failed to allocate Colab GPU session. Please check your network, auth, or quota.")
+            log_err("Failed to allocate Colab GPU session. Please check your "
+                    "network, auth, or quota.")
             sys.exit(1)
     else:
-        rk, zone, rid = current_session_region()
+        fam, zone, endpoint = current_session_region()
         log_ok(f"Session '{SESSION_NAME}' is currently active"
                f"{f' in {zone}' if zone else ''}.")
-        if not region_ok(rk):
+        if not region_ok(fam):
             log_warn(f"Active session is in {zone or 'an unknown region'}, "
-                     f"which does not match your preference ({REGION_PREFERENCE}).")
-            print(f"      {C_GRAY}Colab has no region flag — the only way to change it is to "
-                  f"stop and re-allocate.{C_RESET}", flush=True)
+                     f"which does not match your preference "
+                     f"({REGION_LABELS.get(REGION_PREFERENCE, REGION_PREFERENCE)}).")
+            print(f"      {C_GRAY}Colab has no region flag — the only way to change "
+                  f"it is to stop and re-allocate.{C_RESET}", flush=True)
             try:
-                ans = input(f"      {C_YELLOW}Reallocate now for a different region? [y/N]: {C_RESET}").strip().lower()
+                ans = input(f"      {C_YELLOW}Reallocate now for a different "
+                            f"region? [y/N]: {C_RESET}").strip().lower()
             except Exception:
                 ans = "n"
             if ans == "y":
                 if stop_session():
                     alloc = allocate_session(use_highmem)
                     if not alloc:
-                        log_err("Re-allocation failed after stopping the old session.")
+                        log_err("Re-allocation failed after stopping the old "
+                                "session.")
                         sys.exit(1)
 
 
-def region_ok(region_key):
-    """True when the live region satisfies REGION_PREFERENCE."""
-    if REGION_PREFERENCE in ("any", "auto") or region_key is None:
+def region_ok(family):
+    """True when the live region satisfies REGION_PREFERENCE.
+
+    'auto' accepts anything, and an UNKNOWN family is accepted too: a zone we
+    cannot name must never trigger a re-allocation loop, because that loop
+    destroys a working VM for nothing. That is exactly how a perfect
+    Singapore VM (ass1c2) got thrown away.
+    """
+    if REGION_PREFERENCE in ("any", "auto"):
         return True
-    return region_key == REGION_PREFERENCE
+    if not family:
+        return True
+    return family == REGION_PREFERENCE
+
+
+def _shape_label(use_highmem):
+    return "High-RAM (~54GB)" if use_highmem else "Standard (~12GB)"
+
+
+def _ready(use_highmem, note=""):
+    fam, zone, endpoint = current_session_region()
+    log_ok(f"Session '{SESSION_NAME}' is READY ({_shape_label(use_highmem)}) in "
+           f"{zone or 'unknown region'}{note}.")
+    return True
+
+
+def _current_family_ok(use_highmem):
+    """Shared tail of both allocation paths: is the live VM good enough?"""
+    fam, zone, endpoint = current_session_region()
+    if REGION_PREFERENCE == "any" or region_ok(fam):
+        return _ready(use_highmem)
+    if REGION_PREFERENCE == "auto" and fam == "sg":
+        return _ready(use_highmem)
+    return None
 
 
 def allocate_session(use_highmem=False):
     """
-    Allocate the T4 session, retrying with stop+new until the requested region
-    family is assigned. `colab new` exposes no region flag, so region is purely
-    a matter of luck per allocation — hence the retry loop.
+    Allocate the T4 session, retrying until the requested region family fits.
 
-    Strategy:
-      1. First, check if a session is already alive (from a prior run / retry).
-         If it's in the right region → keep it, done.
-      2. If no session exists, allocate one.
-      3. If the region doesn't match and we have retries left, stop and
-         re-allocate — but wait 20 s between cycles (Colab enforces a cooldown
-         after stopping; shorter waits → "precondition failed").
-      4. If all attempts fail to hit the target region, ALWAYS fall back to the
-         last working allocation rather than leaving the user with no session.
+    `colab new` exposes no region flag, so region is pure luck per allocation
+    and the only lever is stop + re-allocate. Order of operations matters:
+
+      1. Any live assignment that we can adopt is a WINNER -- keep it. A VM is
+         only released when there is no way to reach it, because releasing is
+         irreversible and re-allocation can be refused outright.
+      2. A `412 precondition failed` from `colab new` means a stale assignment
+         is holding the slot: release the stale ones, then retry.
+      3. Never return False while a VM is alive; fall back to the live one.
     """
     want = REGION_PREFERENCE
-    max_attempts = 1 if want == "any" else REGION_MAX_ATTEMPTS
-    # Cooldown between stop → new.  Colab needs ~15-20 s after a stop before
-    # it will accept a new allocation for the same session name.
+    max_attempts = 1 if want in ("any", "auto") else REGION_MAX_ATTEMPTS
+    # Colab refuses a new allocation for ~15-20 s after a stop.
     RETRY_DELAY = 20
+    last_zone = ""
 
     if want not in ("any", "auto"):
-        log_warn(f"No region flag exists in the Colab CLI. Will stop + re-allocate "
-                 f"up to {max_attempts}x until '{want}' matches "
-                 f"({REGION_LABELS.get(want, want)}).  Cooldown between retries: {RETRY_DELAY}s.")
+        log_warn(f"No region flag exists in the Colab CLI. Will stop + "
+                 f"re-allocate up to {max_attempts}x until '{want}' matches "
+                 f"({REGION_LABELS.get(want, want)}). Cooldown between "
+                 f"retries: {RETRY_DELAY}s.")
     elif want == "auto":
-        log_ok(f"Auto region mode: preferring Singapore, will accept any "
-               f"({max_attempts} attempts).")
-
-    last_good_zone = None   # zone of the most recent usable session
+        log_ok("Auto region mode: Singapore first, any region accepted.")
 
     for attempt in range(1, max_attempts + 1):
-        # ------- keep an existing session if it already satisfies us -------
+        # ------------------------------------------------ reuse what exists
         if has_any_session():
-            free_orphans()
-            rk, zone, rid = current_session_region()
-            if rid and ((want == "any") or region_ok(rk)
-                        or (want == "auto" and rk == "sg")):
-                shape = "High-RAM (~54GB)" if use_highmem else "Standard (~12GB)"
-                log_ok(f"Session '{SESSION_NAME}' is READY ({shape}) in "
-                       f"{zone or 'unknown region'}.")
-                return True
-            if rid:
-                last_good_zone = zone
+            if not session_is_named():
+                adopt_orphans()
+            if not session_is_named():
+                # Unreachable even after adoption: a real blocker. Release it
+                # so the allocation below is not refused with a 412.
+                log_warn(f"Live assignment cannot be registered as "
+                         f"'{SESSION_NAME}' — releasing it to allocate cleanly.")
+                free_orphans()
+                if attempt < max_attempts:
+                    time.sleep(RETRY_DELAY)
+                continue
+
+            ok = _current_family_ok(use_highmem)
+            if ok is not None:
+                return ok
+
+            fam, zone, endpoint = current_session_region()
+            last_zone = zone
             if attempt < max_attempts:
                 log_warn(f"Session is in {zone or 'unknown'} (wanted '{want}') — "
                          f"stopping and retrying ({attempt}/{max_attempts})...")
                 stop_session()
-                print(f"      {C_GRAY}Waiting {RETRY_DELAY}s for Colab cooldown...{C_RESET}",
-                      flush=True)
+                print(f"      {C_GRAY}Waiting {RETRY_DELAY}s for the Colab "
+                      f"cooldown...{C_RESET}", flush=True)
                 time.sleep(RETRY_DELAY)
                 continue
             break
 
-        # ------- allocate a new session -------
-        if use_highmem:
-            print(f"      {C_GRAY}[{attempt}/{max_attempts}] Allocating High-RAM Tesla T4 "
-                  f"runtime (--high-mem)...{C_RESET}", flush=True)
-            r = run_cmd(f"colab new -s {SESSION_NAME} --gpu t4 --high-mem", capture=True)
-            if r.returncode != 0:
-                print(f"      {C_YELLOW}High-RAM allocation failed. Trying standard "
-                      f"T4 shape...{C_RESET}", flush=True)
-                r = run_cmd(f"colab new -s {SESSION_NAME} --gpu t4", capture=True)
-        else:
-            print(f"      {C_GRAY}[{attempt}/{max_attempts}] Allocating Standard Tesla T4 "
-                  f"runtime...{C_RESET}", flush=True)
+        # ------------------------------------------------ allocate something new
+        flags = "--gpu t4 --high-mem" if use_highmem else "--gpu t4"
+        print(f"      {C_GRAY}[{attempt}/{max_attempts}] Allocating "
+              f"{'High-RAM' if use_highmem else 'Standard'} Tesla T4 "
+              f"runtime...{C_RESET}", flush=True)
+        r = run_cmd(f"colab new -s {SESSION_NAME} {flags}", capture=True)
+
+        if r.returncode != 0 and use_highmem:
+            print(f"      {C_YELLOW}High-RAM allocation refused. Trying the "
+                  f"standard T4 shape...{C_RESET}", flush=True)
             r = run_cmd(f"colab new -s {SESSION_NAME} --gpu t4", capture=True)
 
         if r.returncode != 0:
-            msg = ((r.stderr or "") + (r.stdout or "")).strip()[:180]
+            msg = ((r.stderr or "") + (r.stdout or "")).strip()[:200]
             log_warn(f"Allocation attempt {attempt} failed: {msg}")
-            # A refusal often means a stale server assignment blocks us.
-            free_orphans()
-            if has_any_session():
-                rk2, zone2, rid2 = current_session_region()
-                if rid2:
-                    last_good_zone = zone2
-                    log_warn(f"A session is present in {zone2 or '?'} — using it.")
-                    if (want == "any") or region_ok(rk2) or (want == "auto" and rk2 == "sg"):
-                        shape = ("High-RAM (~54GB)" if use_highmem
-                                 else "Standard (~12GB)")
-                        log_ok(f"Session '{SESSION_NAME}' is READY ({shape}) in "
-                               f"{zone2 or 'unknown region'}.")
-                        return True
+
+            # Whatever happened, the server is the source of truth: it may have
+            # refused because a stale assignment is still holding the slot, or
+            # it may have actually created one before erroring.
+            adopt_orphans()
+            if session_is_named():
+                ok = _current_family_ok(use_highmem)
+                if ok is not None:
+                    return ok
+
+            if "precondition" in msg.lower() or "412" in msg:
+                log_warn("A stale assignment is blocking the allocation — "
+                         "releasing it.")
+                free_orphans()
+
             if attempt < max_attempts:
-                print(f"      {C_GRAY}Waiting {RETRY_DELAY}s before retry...{C_RESET}",
-                      flush=True)
+                print(f"      {C_GRAY}Waiting {RETRY_DELAY}s before "
+                      f"retry...{C_RESET}", flush=True)
                 time.sleep(RETRY_DELAY)
             continue
 
-        rk, zone, rid = current_session_region()
-        log_ok(f"Allocated: {zone or 'unknown region'}  ({rid or 'id?'})")
-        last_good_zone = zone
+        fam, zone, endpoint = current_session_region()
+        last_zone = zone
+        log_ok(f"Allocated: {zone or 'unknown region'}  ({endpoint or 'id?'})")
 
-        if (want == "any") or region_ok(rk) or (want == "auto" and rk == "sg"):
-            shape = "High-RAM (~54GB)" if use_highmem else "Standard (~12GB)"
-            log_ok(f"Session '{SESSION_NAME}' is READY and active ({shape})"
-                   f"{f' in {zone}' if zone else ''}.")
-            return True
+        ok = _current_family_ok(use_highmem)
+        if ok is not None:
+            return ok
 
         if attempt < max_attempts:
             log_warn(f"{zone or 'unknown'} is not preferred (wanted '{want}') — "
                      f"stopping and retrying ({attempt}/{max_attempts})...")
             stop_session()
-            print(f"      {C_GRAY}Waiting {RETRY_DELAY}s for Colab cooldown...{C_RESET}",
-                  flush=True)
+            print(f"      {C_GRAY}Waiting {RETRY_DELAY}s for the Colab "
+                  f"cooldown...{C_RESET}", flush=True)
             time.sleep(RETRY_DELAY)
 
-    # ---- Exhausted all attempts: NEVER leave the user without a session ----
+    # ------------------------------------- never leave the user without a VM
     if has_any_session():
-        free_orphans()
-        rk, zone, rid = current_session_region()
-        shape = "High-RAM (~54GB)" if use_highmem else "Standard (~12GB)"
-        log_warn(f"Could not get '{want}' after {max_attempts} attempts — "
-                 f"keeping the session in {zone or 'unknown region'}.")
-        log_ok(f"Session '{SESSION_NAME}' is READY ({shape}) in "
-               f"{zone or 'unknown region'} (fallback).")
-        return True
+        adopt_orphans()
+        if session_is_named():
+            log_warn(f"Could not get '{want}' after {max_attempts} attempts — "
+                     f"keeping the live session instead of destroying it.")
+            return _ready(use_highmem, " (fallback)")
 
-    log_warn(f"No session alive after {max_attempts} attempts. "
-             f"Final allocation (any region)...")
+    log_warn(f"No live session after {max_attempts} attempts. Final allocation "
+             f"in any region...")
     free_orphans()
     r = run_cmd(f"colab new -s {SESSION_NAME} --gpu t4", capture=True)
-    if r.returncode == 0 and has_any_session():
-        rk, zone, rid = current_session_region()
-        shape = "High-RAM (~54GB)" if use_highmem else "Standard (~12GB)"
-        log_ok(f"Session '{SESSION_NAME}' is READY ({shape}) in "
-               f"{zone or 'unknown region'} (fallback).")
-        return True
+    if session_is_named():
+        return _ready(use_highmem, " (fallback)")
 
-    log_err(f"Could not allocate any session after {max_attempts} attempts + fallback.")
+    log_err(f"Could not allocate any session after {max_attempts} attempts "
+            f"plus a final fallback.")
     return False
+
+
+def ensure_deployable():
+    """
+    Guarantee `colab exec -s SESSION_NAME` will resolve before we use it.
+
+    `colab sessions` may list an assignment that has no local name for our
+    session, in which case exec fails with "Session 't4' not found" and the
+    whole deployment is wasted. Adopt first, then re-allocate if impossible.
+    """
+    if session_is_named():
+        return True
+    adopt_orphans()
+    if session_is_named():
+        log_ok(f"Re-adopted the live VM as '{SESSION_NAME}'.")
+        return True
+    log_warn(f"Session '{SESSION_NAME}' is not addressable. "
+             f"Allocating a fresh one...")
+    return allocate_session(False)
 
 
 def setup_environment(desktop_mode="minimal"):
     mode_desc = "Windows 11 Fluent GUI" if desktop_mode == "win11" else "Pure Game Mode"
-    log_step("2/3", f"Deploying hardware environment ({mode_desc}, Xorg, NvFBC, WebGPU, Sunshine, Tunnels)...")
-    
+    log_step("2/4", f"Deploying hardware environment ({mode_desc}, Xorg, NvFBC, WebGPU, Sunshine, Tunnels)...")
+
+    if not ensure_deployable():
+        log_err("No addressable session to deploy onto — aborting before wasting a cycle.")
+        sys.exit(1)
+
     # Store desktop mode in remote /tmp/desktop_mode.txt
     set_mode_cmd = f"python3 -c \\\"open('/tmp/desktop_mode.txt', 'w').write('{desktop_mode}')\\\""
     run_cmd(f'colab exec -s {SESSION_NAME} "{set_mode_cmd}"', capture=True)
@@ -492,7 +609,7 @@ def setup_environment(desktop_mode="minimal"):
 
 def get_links(verbose=False):
     if verbose:
-        log_step("3/3", "Extracting active service tunnels and mesh addresses...")
+        log_step("3/4", "Extracting active service tunnels and mesh addresses...")
     res = run_cmd(f"colab exec -s {SESSION_NAME} -f read_links.py", capture=True)
     out = res.stdout.strip()
     try:
@@ -917,36 +1034,58 @@ def setup_funnel():
         return None
 
 def show_help():
-    help_text = f"""
-{C_CYAN}╭─────────────────────────────────────────────────────────────────────────────╮
-│                         {C_WHITE}{C_BOLD}COMMAND CONSOLE MANUAL{C_CYAN}                              │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  {C_GREEN}/pin{C_CYAN}              : {C_WHITE}Show current MoonlightWeb Access PIN (web login)    │
-│  {C_GREEN}/pin new{C_CYAN}          : {C_WHITE}Mint a fresh single-use PIN for a new device        │
-│  {C_GREEN}/funnel{C_CYAN}           : {C_WHITE}Publish MoonlightWeb publicly via Tailscale Funnel  │
-│  {C_GREEN}/accel{C_CYAN}            : {C_WHITE}Verify OpenGL 4.6, Vulkan 1.4 & NVENC hardware accel │
-│  {C_GREEN}/unfreeze{C_CYAN}         : {C_WHITE}Release stuck Shift/Alt/Ctrl keys and unfreeze input │
-│  {C_GREEN}/links{C_CYAN}            : {C_WHITE}Display full endpoint dashboard with PIN & creds     │
-│  {C_GREEN}/status{C_CYAN}           : {C_WHITE}Check GPU temperature, VRAM usage, and active stream │
-│  {C_GREEN}/restart{C_CYAN}          : {C_WHITE}Cleanly restart Sunshine & MoonlightWeb services     │
-│  {C_GREEN}/gtav{C_CYAN}             : {C_WHITE}Install/repair GTA V (Wine+DXVK+Steam shortcut)     │
-│  {C_GREEN}/gtav add{C_CYAN}         : {C_WHITE}Re-register the Steam shortcut (run after login)    │
-│  {C_GREEN}/gtav play{C_CYAN}        : {C_WHITE}Launch GTA V on the desktop right now               │
-│  {C_GREEN}/gtav log{C_CYAN}         : {C_WHITE}Tail the GTA V installer log                        │
-│  {C_GREEN}/gtav verify{C_CYAN}      : {C_WHITE}Prove T4 GPU + NVENC acceleration (no lavapipe)     │
-│  {C_GREEN}/tailscale{C_CYAN}        : {C_WHITE}Query Tailscale mesh connection state and node IP    │
-│  {C_GREEN}/pulse{C_CYAN}            : {C_WHITE}Trigger an immediate 12MB VRAM PyTorch keep-alive    │
-│  {C_GREEN}/region{C_CYAN}           : {C_WHITE}Show current datacenter region / zone                 │
-│  {C_GREEN}/region sg{C_CYAN}        : {C_WHITE}Stop + re-allocate until Singapore assigned           │
-│  {C_GREEN}/region us{C_CYAN}        : {C_WHITE}Stop + re-allocate until US assigned                  │
-│  {C_GREEN}/region eu{C_CYAN}        : {C_WHITE}Stop + re-allocate until EU assigned                  │
-│  {C_GREEN}/region any{C_CYAN}       : {C_WHITE}Take whatever region Colab assigns                    │
-│  {C_GREEN}/free{C_CYAN}             : {C_WHITE}Release orphaned '[?]' assignments blocking allocation │
-│  {C_GREEN}/help{C_CYAN}             : {C_WHITE}Show this list of commands                           │
-│  {C_GREEN}/exit{C_CYAN}             : {C_WHITE}Stop keep-alive and exit launcher                    │
-╰─────────────────────────────────────────────────────────────────────────────╯{C_RESET}
-"""
-    print(help_text)
+    # Built from data with computed padding: the previous hand-aligned box drifted
+    # between 65 and 79 visible columns (and '{SESSION_NAME}' expanded to 't4'),
+    # so the right border never lined up.
+    rows = [
+        ("/pin", "Show current MoonlightWeb Access PIN (web login)"),
+        ("/pin new", "Mint a fresh single-use PIN for a new device"),
+        ("/funnel", "Publish MoonlightWeb publicly via Tailscale Funnel"),
+        ("/accel", "Verify OpenGL 4.6, Vulkan 1.4 & NVENC hardware accel"),
+        ("/unfreeze", "Release stuck Shift/Alt/Ctrl keys and unfreeze input"),
+        ("/links", "Display full endpoint dashboard with PIN & creds"),
+        ("/status", "Check GPU temperature, VRAM usage, active stream"),
+        ("/restart", "Cleanly restart Sunshine & MoonlightWeb services"),
+        ("/gtav", "Install/repair GTA V (Wine+DXVK+Steam shortcut)"),
+        ("/gtav add", "Re-register the Steam shortcut (run after login)"),
+        ("/gtav play", "Launch GTA V on the desktop right now"),
+        ("/gtav log", "Tail the GTA V installer log"),
+        ("/gtav verify", "Prove T4 GPU + NVENC acceleration (no lavapipe)"),
+        ("/tailscale", "Query Tailscale mesh state and node IP"),
+        ("/pulse", "Trigger an immediate 12MB VRAM PyTorch keep-alive"),
+        ("/region", "Show the live zone taken from the runtime URL"),
+        ("/region sg", "Stop + re-allocate until Singapore assigned"),
+        ("/region us", "Stop + re-allocate until US assigned"),
+        ("/region eu", "Stop + re-allocate until EU assigned"),
+        ("/region any", "Take whatever region Colab assigns"),
+        ("/adopt", "Attach a live VM registered under another name"),
+        ("/free", f"Release every assignment except '{SESSION_NAME}'"),
+        ("/help", "Show this list of commands"),
+        ("/exit", "Stop keep-alive and exit launcher"),
+    ]
+
+    W = 75          # inner width between the two border characters
+    CMD_W = 16      # column width for the command
+    title = "COMMAND CONSOLE MANUAL"
+
+    t_pad = W - len(title)
+    t_left = t_pad // 2
+
+    out = [f"{C_CYAN}╭{'─' * W}╮",
+           f"│{' ' * t_left}{C_WHITE}{C_BOLD}{title}{C_CYAN}{' ' * (t_pad - t_left)}│",
+           f"├{'─' * W}┤"]
+
+    for cmd, desc in rows:
+        body = f"  {cmd.ljust(CMD_W)}: {desc}"
+        if len(body) > W:
+            desc = desc[:W - (CMD_W + 4)]
+            body = f"  {cmd.ljust(CMD_W)}: {desc}"
+        out.append(f"│  {C_GREEN}{cmd.ljust(CMD_W)}{C_CYAN}: "
+                   f"{C_WHITE}{desc.ljust(W - CMD_W - 4)}{C_CYAN}│")
+
+    out.append(f"╰{'─' * W}╯{C_RESET}")
+    print("\n" + "\n".join(out))
+
 
 # -------------------------------------------------------------
 # 4. Background Keep-Alive Pulse Daemon
@@ -1075,35 +1214,47 @@ def main():
                     run_cmd(f"colab exec -s {SESSION_NAME} --env GTA_STEP=verify -f gta_setup.py")
                 else:
                     install_gta_v()
-            elif cmd in ["/region", "region", "/zone", "zone"]:
-                rk, zone, rid = current_session_region()
-                if not rid:
+            elif cmd in ["/region", "/zone", "region", "zone"]:
+                fam, zone, endpoint = current_session_region()
+                if not endpoint:
                     log_warn(f"No active session '{SESSION_NAME}'.")
                 else:
-                    print(f"      {C_WHITE}Session   : {C_CYAN}{rid}{C_RESET}")
+                    print(f"      {C_WHITE}Session   : {C_CYAN}{endpoint}{C_RESET}")
                     print(f"      {C_WHITE}Zone      : {C_CYAN}{zone or 'unknown'}{C_RESET}")
-                    print(f"      {C_WHITE}Family    : {C_CYAN}{rk or 'unknown'}{C_RESET}")
-                    print(f"      {C_WHITE}Preference: {C_CYAN}{REGION_LABELS.get(REGION_PREFERENCE, REGION_PREFERENCE)}{C_RESET}")
-                    if not region_ok(rk):
+                    print(f"      {C_WHITE}Family    : {C_CYAN}{fam or 'unknown'}{C_RESET}")
+                    print(f"      {C_WHITE}Preference: {C_CYAN}"
+                          f"{REGION_LABELS.get(REGION_PREFERENCE, REGION_PREFERENCE)}"
+                          f"{C_RESET}")
+                    if not region_ok(fam):
                         log_warn("Current zone does not match your preference. "
                                  "Run /region sg (or us/eu) to stop and re-allocate.")
                 if arg.lower() in ("sg", "us", "eu", "any", "auto"):
                     REGION_PREFERENCE = arg.lower()
-                    log_ok(f"Region preference set to {REGION_LABELS[REGION_PREFERENCE]}")
-                    print(f"      {C_GRAY}Stopping session and re-allocating...{C_RESET}", flush=True)
+                    log_ok(f"Region preference set to "
+                           f"{REGION_LABELS[REGION_PREFERENCE]}")
+                    print(f"      {C_GRAY}Stopping session and re-allocating..."
+                          f"{C_RESET}", flush=True)
                     if stop_session() and allocate_session(False):
-                        log_warn("New runtime allocated — the desktop stack is NOT deployed yet. "
-                                 "Re-run start.bat to provision it.")
+                        log_warn("New runtime allocated — the desktop stack is NOT "
+                                 "deployed yet. Re-run start.bat to provision it.")
                 elif arg:
-                    log_warn("Usage: /region [sg|us|eu|any]  (or /region with no args to show the zone)")
+                    log_warn("Usage: /region [sg|us|eu|any]  "
+                             "(or /region with no args to show the zone)")
+            elif cmd in ["/adopt", "adopt"]:
+                log_step("ADOPT", "Re-attaching to any live Colab VM...")
+                if adopt_orphans() or session_is_named():
+                    fam, zone, endpoint = current_session_region()
+                    log_ok(f"Session '{SESSION_NAME}' in {zone or 'unknown'} "
+                           f"is attached and addressable.")
+                else:
+                    log_warn("Nothing to adopt. Run /region <sg|us|eu> to allocate.")
             elif cmd in ["/free", "free"]:
-                log_step("FREE", "Releasing orphaned Colab assignments...")
+                log_step("FREE", "Releasing every assignment except "
+                                 f"'{SESSION_NAME}' (destroys those VMs)...")
                 if free_orphans():
-                    rk, zone, rid = current_session_region()
-                    if rid:
-                        log_ok(f"Session '{SESSION_NAME}' in {zone or 'unknown'} is healthy.")
-                    else:
-                        log_ok("No server-side assignments remain.")
+                    log_ok("No stale assignments remain.")
+                else:
+                    log_warn("Some assignments could not be released.")
             elif cmd in ["/help", "help", "/?"]:
                 show_help()
             elif cmd in ["/exit", "exit", "/quit", "quit", "q"]:

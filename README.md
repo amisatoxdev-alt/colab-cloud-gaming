@@ -8,7 +8,7 @@ High-performance, ultra-low-latency game and desktop streaming on Google Colab (
 
 - [x] Full Windows 11 Fluent Dark GUI (Centered Tint2 Taskbar, Rofi Start Menu, Desktop Icons, Rounded Windows, Papirus icons, B00merang Windows 11 theme)
 - [x] Interactive startup options: Tesla T4 Standard (Default) vs High-RAM & Pure Game Mode (Default) vs Windows 11 GUI
-- [x] Region-aware session allocation: Auto (Singapore-first) / US / EU / SG / Any with stop+retry loop (Colab has no region flag)
+- [x] Region-aware session allocation: Auto (Singapore-first) / US / EU / SG / Any with stop+retry loop (Colab has no region flag); zone is read from the runtime URL, and any live VM is re-adopted instead of destroyed
 - [x] 100% Pure native Xorg XTest driverless input pipeline (0ms input latency, freeze-immune mouse & keyboard)
 - [x] High-resolution NVIDIA GeForce gaming desktop wallpaper
 - [x] Hardware Xorg display server with direct NvFBC VRAM capture at 60 FPS
@@ -134,30 +134,73 @@ The script will interactively guide you:
 
 > [!IMPORTANT]
 > **Colab has no region flag.** `colab new` exposes only `--gpu`, `--tpu`, `--high-mem` and
-> `--session`. The datacenter zone is assigned by Google and is visible only inside the
-> runtime id, e.g. `gpu-t4-s-usw1b1-j51ah3434c1g` → `usw1` → **us-west1**.
-> Region preference is therefore implemented as *stop → wait ~20 s → re-allocate*, retried
-> up to 8 times until the requested family appears. Zone tokens recognised:
+> `--session`. The datacenter zone is assigned by Google. Region preference is therefore
+> implemented as *stop → wait ~20 s → re-allocate*, retried up to 8 times until the
+> requested family appears.
 >
-> | Token | Zone | Token | Zone |
-> |---|---|---|---|
-> | `use1` `use2` `use4` | us-east1/2/4 | `usw1` `usw2` `usw4` | us-west1/2/4 |
-> | `usc1` | us-central1 | `euw1` `euw2` `euw3` `euw4` | europe-west1/2/3/4 |
-> | `euc1` | europe-central2 | `asse1` `asse2` `apse1` `apse2` | asia-southeast1/2 |
+> **The zone is read from the runtime URL, not guessed from the id.** The URL is the only
+> trustworthy source:
+>
+> ```text
+> https://8080-gpu-t4-s-ass1c2-222r7xhmk9xse-c.asia-southeast1.prod.r.colab.dev
+>                                              ^^^^^^^^^^^^^^^^ zone
+> ```
+>
+> `colab_zone.py` extracts it with `\.([a-z]{2,}-[a-z]+\d)\.prod\.` and maps the family:
+> `asia-southeast*` → **sg**, `us-east*` / `us-west*` / `us-central*` → **us**,
+> `europe-*` → **eu**.
+>
+> Earlier versions decoded the abbreviation *inside the runtime id* instead. That was the
+> bug behind "a Singapore VM is reported as unknown": `ass1c2` is the real token for
+> **asia-southeast1**, and it was absent from the table (which even listed the wrong
+> spellings `asse1` / `apse1`). Id-abbreviation guessing has been removed entirely.
 >
 > If every attempt misses, the launcher **keeps the last working VM** and warns instead of
-> exiting — you never end up with no session just because the region was wrong.
+> exiting. An unnameable zone is treated as acceptable — a preference never tears down a
+> live machine.
 
 > [!WARNING]
-> **Orphaned `[?]` assignments.** If an allocation is interrupted, the Colab server can hold
-> an assignment while the local `~/.config/colab-cli/sessions.json` is empty. `colab sessions`
-> then prints `[?] gpu-t4-s-...`, `colab stop` answers *"Session '?' not found"*, and any new
-> allocation is refused with `precondition failed`. The CLI cannot clear this by name; only
-> the client API's `unassign(endpoint)` can. `colab_free.py` (and `/free` in the console)
-> does exactly that. The launcher now calls it automatically before allocating.
-> Detection also uses the bracketed name (`^\[name\]`), never a substring search — `"t4"` is
-> a substring of both `gpu-t4-s-...` and `Hardware: T4`, which previously made the launcher
-> believe a session existed when it did not.
+> **Orphaned server assignments — two shapes.** If an allocation is interrupted, or a
+> `colab sessions` call prunes the local record, the Colab server keeps an assignment while
+> `~/.config/colab-cli/sessions.json` is missing or stale. `colab exec -s t4` then fails with
+> **"Session 't4' not found"** even though the VM is alive and billing, `colab stop` answers
+> *"not found"*, and a new allocation is refused with `precondition failed`.
+>
+> `colab sessions` shows two different orphan shapes, and **both must be adopted**:
+>
+> | Shape | Cause |
+> |---|---|
+> | `[?] gpu-t4-s-...` | server holds an assignment the local store cannot name |
+> | `[ab12cd] gpu-t4-s-...` | `colab new` without `-s` registered it under a random 6-hex name |
+>
+> Checking only for `[?]` left the second shape unmatched — that produced the repeating
+> `A server assignment exists but cannot be adopted as 't4'` warning. `needs_adoption()` now
+> fires whenever any assignment exists whose name is not `t4`.
+>
+> The server's assignment record carries `runtimeProxyInfo.token`, `.url` and `.expires_at`,
+> which is everything a local session entry needs — so the launcher **re-adopts** the VM
+> instead of destroying it:
+>
+> | Helper | Effect |
+> |---|---|
+> | `colab_adopt.py` | Re-registers **either** orphan shape under `t4` (non-destructive); `--endpoint <id>` targets a specific VM, `--list` shows candidates |
+> | `colab_free.py` | `--free --name t4` releases every assignment **except** `t4` (this is what clears a `412`); `--all` releases everything; no flag = dry-run list. **Destroys the released VMs.** |
+>
+> `adopt_orphans()` runs before every allocation and before deployment (`ensure_deployable()`),
+> so a live VM is never orphaned into unusability. `/adopt` does it on demand; `/free` is
+> destructive and only for a deliberate discard.
+>
+> Detection uses the bracketed name (`^\[name\]`), never a substring search — `"t4"` is a
+> substring of both `gpu-t4-s-...` and `Hardware: T4`, which previously made the launcher
+> believe a session existed when it did not. Crucially, a server row alone is **not** treated
+> as ready: `colab exec` only resolves names from the local store, so an un-adopted orphan
+> would deploy to nothing.
+>
+> The row parser also rejects the CLI's own log lines. With no sessions at all,
+> `colab sessions` prints `[colab] No sessions found.` — the same bracket shape, which parsed
+> as a phantom row named `colab` at endpoint `No`. That kept `has_any_session()` true forever,
+> so allocation never ran and `stop_session()` reported failure after a successful stop. A
+> genuine row must carry a `Hardware:` field or a `gpu-*`/`tpu-*` runtime id.
 - Start the automated keepalive pulse loop.
 
 ### 2. Connect via Moonlight
@@ -194,12 +237,13 @@ While the background keep-alive pulse keeps your GPU warm, you can run commands 
 - `/status`     : Query real-time GPU telemetry, VRAM usage, and streaming sessions.
 - `/restart`    : Cleanly restart Sunshine & Openbox without resetting the Colab VM.
 - `/tailscale`  : Query Tailscale connection state and Colab node IP.
-- `/region`     : Show current datacenter region (zone parsed from the runtime id).
+- `/region`     : Show current datacenter region and zone (read from the runtime URL).
 - `/region sg`  : Stop the session and re-allocate until Singapore is assigned.
 - `/region us`  : Stop and re-allocate until a US zone is assigned.
 - `/region eu`  : Stop and re-allocate until an EU zone is assigned.
 - `/region any` : Accept whatever region Colab gives (no retry).
-- `/free`       : Release orphaned `[?]` server assignments that block new allocations.
+- `/adopt`      : Re-attach a live VM that is registered under another name (non-destructive).
+- `/free`       : Release every server assignment **except `t4`** — this destroys those VMs.
 - `/pulse`      : Manually trigger an immediate PyTorch VRAM pulse.
 - `/gtav`       : Install GTA V (Wine + DXVK + Steam shortcut) if not done at startup.
 - `/gtav add`   : Re-register the Steam non-Steam shortcut (run once after logging into Steam).
@@ -289,4 +333,6 @@ To ensure stutter-free streaming over the relay:
 - `push.bat`: One-click Git push script for repo maintenance.
 - `gta_setup.py`: One-shot GTA V installer — Wine 9 + DXVK, Google Drive download, 7z extract, Steam library staging, and non-Steam shortcut registration.
 - `gta_status.py`: Reports GTA V install state (archive, game dir, Wine, DXVK, Steam shortcut, running processes).
-- `colab_free.py`: Lists and releases orphaned Colab server assignments (`[?]` rows) that `colab stop` cannot address.
+- `colab_zone.py`: Prints one JSON line with the real zone, family, endpoint and URL of the registered session — the zone is parsed from the runtime URL (`.asia-southeast1.prod.r.colab.dev`), not from the id abbreviation.
+- `colab_adopt.py`: Re-adopts a live VM into the local store under `t4` — handles both orphan shapes (`[?]` and `[leftover-name]`), drops duplicate/stale local names, `--endpoint` targets a specific VM, `--list` shows candidates. Non-destructive.
+- `colab_free.py`: Lists server assignments and releases them. `--free --name t4` releases everything **except** `t4` (clears a `412`); `--all` releases everything. **Destroys the released VMs.**
