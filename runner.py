@@ -5,6 +5,8 @@ import json
 import os
 import re
 import threading
+import tempfile
+import uuid
 import ctypes
 
 # -------------------------------------------------------------
@@ -83,7 +85,7 @@ def family_of_zone(zone):
 def zone_info():
     """(family, zone, endpoint) read from the live session via colab_zone.py."""
     r = run_cmd(f"{sys.executable} colab_zone.py --name {SESSION_NAME}",
-                capture=True)
+                capture=True, timeout=60)
     out = (r.stdout or "").strip()
     for line in reversed(out.splitlines()):
         line = line.strip()
@@ -112,7 +114,7 @@ def stop_session():
         log_ok(f"No active session '{SESSION_NAME}' to stop.")
         return True
 
-    res = run_cmd(f"colab stop -s {SESSION_NAME}", capture=True)
+    res = run_cmd(f"colab stop -s {SESSION_NAME}", capture=True, timeout=120)
     out = (res.stdout or "") + (res.stderr or "")
     if "not found" in out.lower() or "not addressable" in out.lower():
         free_orphans()
@@ -147,11 +149,146 @@ def log_warn(msg):
 def log_err(msg):
     print(f"{C_RED}[✗]{C_RESET} {msg}", flush=True)
 
-def run_cmd(cmd, capture=False):
-    if capture:
-        return subprocess.run(cmd, shell=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    else:
+def run_cmd(cmd, capture=False, timeout=None):
+    """Run a host command, never blocking forever. Returns CompletedProcess.
+
+    A bare subprocess.run() is how the launcher hung with no output and no way
+    out: one wedged `colab exec` blocked the caller indefinitely.
+
+    subprocess.run(timeout=...) is NOT enough on Windows. It terminates only
+    cmd.exe; the real child (`python`, `colab`) is orphaned, keeps the stdout
+    pipe open, and communicate() keeps waiting. Measured: timeout=3 on
+    `python -c "time.sleep(30)"` still blocked for the full 30s. So: capture
+    into temp FILES (no pipe to hold open), and on expiry kill the whole tree
+    with `taskkill /F /T`. A timeout is reported as returncode 124 (the
+    `timeout(1)` convention) so callers can distinguish it from a real failure.
+    """
+    if not timeout:
+        if capture:
+            return subprocess.run(cmd, shell=True, text=True,
+                                  stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE)
         return subprocess.run(cmd, shell=True)
+
+    out_f = err_f = None
+    out_path = err_path = None
+    try:
+        if capture:
+            base = os.path.join(tempfile.gettempdir(),
+                                f"ccg_{os.getpid()}_{uuid.uuid4().hex[:10]}")
+            out_path, err_path = base + ".out", base + ".err"
+            out_f = open(out_path, "w+", encoding="utf-8", errors="replace")
+            err_f = open(err_path, "w+", encoding="utf-8", errors="replace")
+            p = subprocess.Popen(cmd, shell=True, stdout=out_f, stderr=err_f,
+                                 stdin=subprocess.DEVNULL, text=True)
+        else:
+            p = subprocess.Popen(cmd, shell=True)
+
+        try:
+            code = p.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            log_warn(f"Command exceeded {timeout}s — killing it.")
+            # /T kills the child tree, which is what actually holds the handle.
+            subprocess.run(f"taskkill /F /T /PID {p.pid}",
+                           shell=True, capture_output=True)
+            try:
+                p.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                p.kill()
+            code = 124
+
+        out = err = ""
+        if capture:
+            for f in (out_f, err_f):
+                f.flush()
+            out_f.seek(0)
+            err_f.seek(0)
+            out = out_f.read()
+            err = err_f.read()
+        return subprocess.CompletedProcess(cmd, code, stdout=out, stderr=err)
+    finally:
+        for f in (out_f, err_f):
+            if f:
+                try:
+                    f.close()
+                except Exception:
+                    pass
+        for path in (out_path, err_path):
+            if path:
+                try:
+                    os.remove(path)
+                except Exception:
+                    pass
+
+
+# Only one `colab exec` may be in flight at a time. `colab exec` drives a single
+# persistent Jupyter kernel per session, so a second concurrent call does not
+# run in parallel -- it queues behind the first, silently, forever. The keepalive
+# thread and the interactive loop both issue execs, so this lock is what stops
+# them wedging each other.
+EXEC_LOCK = threading.Lock()
+
+# Hard ceiling for the host-side wait on an exec. Kept above the CLI's own
+# --timeout (which only counts idle time without output) so the CLI usually
+# gives up first and reports something useful.
+EXEC_HARD_TIMEOUT = 600
+
+
+def _reset_kernel():
+    """Forget the cached kernel/session ids so the next exec boots a fresh kernel.
+
+    Recovery for the single worst failure mode: `colab exec` reuses the
+    kernel_id in ~/.config/colab-cli/sessions.json. If that kernel is wedged
+    (a cell that never finishes, a daemon holding its output stream open),
+    every subsequent exec waits on it forever and no command can be issued to
+    fix it -- the session becomes unreachable while still being billed.
+    Dropping the ids makes the CLI allocate a new kernel on the same VM.
+    Verified: a print('PONG') that had been timing out for minutes returned in
+    5.4s immediately after the cached kernel_id was cleared.
+    """
+    path = os.path.expanduser("~/.config/colab-cli/sessions.json")
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        entry = data.get(SESSION_NAME)
+        if not entry:
+            return False
+        dropped = [k for k in ("kernel_id", "session_id") if entry.pop(k, None)]
+        if not dropped:
+            return False
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2)
+        log_warn(f"Reset the remote kernel ({', '.join(dropped)} cleared).")
+        return True
+    except Exception as e:
+        log_warn(f"Could not reset the remote kernel: {e}")
+        return False
+
+
+def run_exec(args, capture=True, idle_timeout=90, hard_timeout=EXEC_HARD_TIMEOUT,
+             retry_on_timeout=True):
+    """Run `colab exec -s SESSION_NAME <args>`, serialized and time-bounded.
+
+    `idle_timeout` is passed to the CLI as --timeout (seconds without output).
+    `hard_timeout` bounds the host-side wait. On a wedge the cached kernel is
+    reset and the command is retried once on a fresh kernel -- safe for the
+    idempotent probes this launcher mostly runs. Long jobs (deployment, GTA
+    download) pass hard_timeout=None and are never retried.
+    """
+    parts = [f"colab exec -s {SESSION_NAME}"]
+    if idle_timeout:
+        parts.append(f"--timeout {idle_timeout}")
+    parts.append(args)
+    cmd = " ".join(parts)
+
+    with EXEC_LOCK:
+        r = run_cmd(cmd, capture=capture, timeout=hard_timeout)
+        if r.returncode == 124 and retry_on_timeout:
+            log_warn("The session kernel stopped responding — restarting it "
+                     "and retrying once...")
+            if _reset_kernel():
+                r = run_cmd(cmd, capture=capture, timeout=hard_timeout)
+        return r
 
 # -------------------------------------------------------------
 # 2. Session Lifecycle & Remote Provisioning
@@ -230,11 +367,8 @@ def install_gta_v():
     log_step("4/4", "Installing GTA V (Wine + DXVK + Steam shortcut)...")
     print(f"      {C_GRAY}Downloading ~13.7 GB, extracting ~15 GB, then registering in Steam.{C_RESET}", flush=True)
     print(f"      {C_GRAY}This runs detached - watch progress with /gtav log.{C_RESET}", flush=True)
-    cmd = (
-        f"colab exec -s {SESSION_NAME} --env GTA_STEP=all "
-        f"-f gta_setup.py --timeout 0"
-    )
-    res = run_cmd(cmd)
+    res = run_exec("--env GTA_STEP=all -f gta_setup.py", capture=False,
+                   idle_timeout=120, hard_timeout=3600, retry_on_timeout=False)
     if res.returncode != 0:
         log_warn("GTA V install returned non-zero. Check /var/log/services/gta_setup.log")
     else:
@@ -259,7 +393,7 @@ def _session_rows():
     always carries a runtime endpoint (`gpu-...` / `tpu-...`) or a
     `Hardware:` field; log lines carry neither.
     """
-    out = run_cmd("colab sessions", capture=True).stdout or ""
+    out = run_cmd("colab sessions", capture=True, timeout=120).stdout or ""
     rows = []
     for line in out.splitlines():
         m = re.match(r"^\[([^\]]*)\]\s+(\S+)", line.strip())
@@ -341,7 +475,7 @@ def adopt_orphans():
                  f"'{SESSION_NAME}' instead of deleting it...")
 
     r = run_cmd(f'{sys.executable} colab_adopt.py --name {SESSION_NAME}',
-                capture=True)
+                capture=True, timeout=120)
     body = ((r.stdout or "") + (r.stderr or "")).strip()
     for line in body.splitlines():
         print(f"      {C_GRAY}{line}{C_RESET}", flush=True)
@@ -362,7 +496,7 @@ def free_orphans():
         return True
     log_warn("Releasing stale Colab assignment(s) so allocation can proceed...")
     r = run_cmd(f"{sys.executable} colab_free.py --free --name {SESSION_NAME}",
-                capture=True)
+                capture=True, timeout=180)
     print(f"      {C_GRAY}{((r.stdout or '') + (r.stderr or '')).strip()}{C_RESET}",
           flush=True)
     return not server_assignments()
@@ -502,12 +636,12 @@ def allocate_session(use_highmem=False):
         print(f"      {C_GRAY}[{attempt}/{max_attempts}] Allocating "
               f"{'High-RAM' if use_highmem else 'Standard'} Tesla T4 "
               f"runtime...{C_RESET}", flush=True)
-        r = run_cmd(f"colab new -s {SESSION_NAME} {flags}", capture=True)
+        r = run_cmd(f"colab new -s {SESSION_NAME} {flags}", capture=True, timeout=420)
 
         if r.returncode != 0 and use_highmem:
             print(f"      {C_YELLOW}High-RAM allocation refused. Trying the "
                   f"standard T4 shape...{C_RESET}", flush=True)
-            r = run_cmd(f"colab new -s {SESSION_NAME} --gpu t4", capture=True)
+            r = run_cmd(f"colab new -s {SESSION_NAME} --gpu t4", capture=True, timeout=420)
 
         if r.returncode != 0:
             msg = ((r.stderr or "") + (r.stdout or "")).strip()[:200]
@@ -560,7 +694,7 @@ def allocate_session(use_highmem=False):
     log_warn(f"No live session after {max_attempts} attempts. Final allocation "
              f"in any region...")
     free_orphans()
-    r = run_cmd(f"colab new -s {SESSION_NAME} --gpu t4", capture=True)
+    r = run_cmd(f"colab new -s {SESSION_NAME} --gpu t4", capture=True, timeout=420)
     if session_is_named():
         return _ready(use_highmem, " (fallback)")
 
@@ -598,10 +732,11 @@ def setup_environment(desktop_mode="minimal"):
 
     # Store desktop mode in remote /tmp/desktop_mode.txt
     set_mode_cmd = f"python3 -c \\\"open('/tmp/desktop_mode.txt', 'w').write('{desktop_mode}')\\\""
-    run_cmd(f'colab exec -s {SESSION_NAME} "{set_mode_cmd}"', capture=True)
+    run_exec(f'"{set_mode_cmd}"', idle_timeout=20)
 
     print(f"      {C_GRAY}Executing parallel automated deployment on remote instance...{C_RESET}", flush=True)
-    res = run_cmd(f"colab exec -s {SESSION_NAME} --env DESKTOP_MODE={desktop_mode} -f setup_remote.py --timeout 0")
+    res = run_exec("--env DESKTOP_MODE=%s -f setup_remote.py" % desktop_mode,
+                   capture=False, hard_timeout=None, retry_on_timeout=False)
     if res.returncode != 0:
         log_warn("Deployment returned non-zero code. Verifying active services...")
     else:
@@ -610,8 +745,8 @@ def setup_environment(desktop_mode="minimal"):
 def get_links(verbose=False):
     if verbose:
         log_step("3/4", "Extracting active service tunnels and mesh addresses...")
-    res = run_cmd(f"colab exec -s {SESSION_NAME} -f read_links.py", capture=True)
-    out = res.stdout.strip()
+    res = run_exec("-f read_links.py", idle_timeout=30)
+    out = (res.stdout or "").strip()
     try:
         data = json.loads(out)
         return data
@@ -633,9 +768,9 @@ def get_links(verbose=False):
 
 def check_and_wait_tailscale(ts_login_url):
     print(f"\n{C_CYAN}--- TAILSCALE MESH NETWORK STATUS ---{C_RESET}")
-    res = run_cmd(f"colab exec -s {SESSION_NAME} -f check_ts.py", capture=True)
-    
-    if "STATUS:AUTHORIZED" in res.stdout:
+    res = run_exec("-f check_ts.py", idle_timeout=30)
+
+    if "STATUS:AUTHORIZED" in (res.stdout or ""):
         lines = res.stdout.replace("STATUS:AUTHORIZED", "").strip().split("\n")
         first_line = lines[0] if lines else ""
         parts = first_line.split()
@@ -644,26 +779,35 @@ def check_and_wait_tailscale(ts_login_url):
         return ip
 
     if not ts_login_url or "login.tailscale.com" not in ts_login_url:
-        m = re.search(r'https://login\.tailscale\.com/a/[a-zA-Z0-9]+', res.stdout)
+        m = re.search(r'https://login\.tailscale\.com/a/[a-zA-Z0-9]+', res.stdout or "")
         if m:
             ts_login_url = m.group(0)
 
     if ts_login_url and "login.tailscale.com" in ts_login_url:
         print(f"  {C_YELLOW}Authorization Required:{C_RESET} {C_WHITE}{C_BOLD}{ts_login_url}{C_RESET}")
-        print(f"  {C_GRAY}Waiting for authentication approval (checks every 5s)...{C_RESET}", end="", flush=True)
-        for _ in range(60):
+        print(f"  {C_GRAY}Waiting for authentication approval (checks every 5s, up to 5 min)...{C_RESET}",
+              end="", flush=True)
+        # Each poll is bounded, so this can never hang even if one exec wedges.
+        # A single wedged poll previously blocked the launcher forever because
+        # run_cmd had no deadline; a dead poll is now just a skipped tick.
+        deadline = time.time() + 300
+        while time.time() < deadline:
             time.sleep(5)
-            res = run_cmd(f"colab exec -s {SESSION_NAME} -f check_ts.py", capture=True)
-            if "STATUS:AUTHORIZED" in res.stdout:
+            res = run_exec("-f check_ts.py", idle_timeout=25, retry_on_timeout=True)
+            if "STATUS:AUTHORIZED" in (res.stdout or ""):
                 lines = res.stdout.replace("STATUS:AUTHORIZED", "").strip().split("\n")
                 first_line = lines[0] if lines else ""
                 parts = first_line.split()
                 ip = parts[0] if parts else "100.x.y.z"
                 print(f"\n{C_GREEN}[✓] Authorized! Node IP: {C_BOLD}{ip}{C_RESET}")
                 return ip
+            if res.returncode == 124:
+                print(f"{C_YELLOW}!{C_RESET}", end="", flush=True)
             else:
                 print(".", end="", flush=True)
-        print(f"\n{C_YELLOW}[!] Tailscale wait timed out.{C_RESET}")
+        print(f"\n{C_YELLOW}[!] Tailscale authorization timed out after 5 min.{C_RESET}")
+        print(f"  {C_GRAY}The desktop is already deployed — you can authorize at any "
+              f"time, then run /tailscale or /funnel.{C_RESET}")
     return None
 
 def make_card_row(label, val, val_color=C_WHITE, max_len=62):
@@ -751,7 +895,7 @@ else:
 """
     with open("temp_pair.py", "w") as f:
         f.write(code)
-    res = run_cmd(f"colab exec -s {SESSION_NAME} --timeout 15 -f temp_pair.py", capture=True)
+    res = run_exec("-f temp_pair.py", idle_timeout=15)
     try:
         os.remove("temp_pair.py")
     except Exception:
@@ -774,7 +918,7 @@ def show_pin(new=False):
     global latest_links
     action = " --env MW_NEW=1" if new else ""
     print(f"\n{C_CYAN}[*] {'Generating a fresh' if new else 'Reading current'} MoonlightWeb Access PIN...{C_RESET}", flush=True)
-    res = run_cmd(f"colab exec -s {SESSION_NAME} -f mw_pin.py{action}", capture=True)
+    res = run_exec(f"-f mw_pin.py{action}", idle_timeout=30)
     out = res.stdout.strip()
     data = {}
     for line in out.splitlines():
@@ -863,7 +1007,7 @@ print(json.dumps(report))
 """
     with open("temp_accel.py", "w") as f:
         f.write(code)
-    res = run_cmd(f"colab exec -s {SESSION_NAME} --timeout 15 -f temp_accel.py", capture=True)
+    res = run_exec("-f temp_accel.py", idle_timeout=15, hard_timeout=180)
     try:
         os.remove("temp_accel.py")
     except Exception:
@@ -908,7 +1052,7 @@ print("UNFROZEN_OK")
 """
     with open("temp_unfreeze.py", "w") as f:
         f.write(code)
-    res = run_cmd(f"colab exec -s {SESSION_NAME} --timeout 10 -f temp_unfreeze.py", capture=True)
+    res = run_exec("-f temp_unfreeze.py", idle_timeout=10)
     try:
         os.remove("temp_unfreeze.py")
     except Exception:
@@ -931,7 +1075,7 @@ subprocess.run('ss -tulpn | grep 47989 || true', shell=True)
 """
     with open("temp_stat.py", "w") as f:
         f.write(code)
-    res = run_cmd(f"colab exec -s {SESSION_NAME} -f temp_stat.py", capture=True)
+    res = run_exec("-f temp_stat.py", idle_timeout=30, hard_timeout=180)
     try:
         os.remove("temp_stat.py")
     except Exception:
@@ -983,7 +1127,7 @@ print('RESTARTED_OK')
 """
     with open("temp_restart.py", "w") as f:
         f.write(code)
-    res = run_cmd(f"colab exec -s {SESSION_NAME} -f temp_restart.py", capture=True)
+    res = run_exec("-f temp_restart.py", idle_timeout=30, hard_timeout=240)
     try:
         os.remove("temp_restart.py")
     except Exception:
@@ -994,7 +1138,7 @@ print('RESTARTED_OK')
         log_warn("Restart script finished. Telemetry output:\n" + res.stdout)
 
 def trigger_pulse():
-    res = run_cmd(f"colab exec -s {SESSION_NAME} -f keepalive_code.py", capture=True)
+    res = run_exec("-f keepalive_code.py", idle_timeout=20, hard_timeout=120)
     out = res.stdout.strip()
     if "Keep-Alive Pulse" in out:
         log_ok(out)
@@ -1003,7 +1147,7 @@ def trigger_pulse():
 
 def setup_funnel():
     print(f"\n{C_CYAN}[*] Configuring Tailscale Public Funnel (Low-Latency Moonlight Web for Friends)...{C_RESET}", flush=True)
-    res = run_cmd(f"colab exec -s {SESSION_NAME} -f start_ts_funnel.py", capture=True)
+    res = run_exec("-f start_ts_funnel.py", idle_timeout=30, hard_timeout=180)
     out = res.stdout.strip()
     data = {}
     for line in out.splitlines():
@@ -1059,6 +1203,7 @@ def show_help():
         ("/region eu", "Stop + re-allocate until EU assigned"),
         ("/region any", "Take whatever region Colab assigns"),
         ("/adopt", "Attach a live VM registered under another name"),
+        ("/kernel", "Reset a wedged remote kernel (fixes a frozen console)"),
         ("/free", f"Release every assignment except '{SESSION_NAME}'"),
         ("/help", "Show this list of commands"),
         ("/exit", "Stop keep-alive and exit launcher"),
@@ -1091,19 +1236,35 @@ def show_help():
 # 4. Background Keep-Alive Pulse Daemon
 # -------------------------------------------------------------
 def keep_alive_worker():
+    """Pulse the GPU every KEEP_ALIVE_INTERVAL seconds to dodge idle timeouts.
+
+    Never let this interrupt the user: `colab exec` drives one persistent kernel
+    per session, so a pulse fired during a deployment or a long command does not
+    run beside it -- it queues behind it, and two execs racing on one kernel is
+    how the session got wedged. The pulse is skipped (cheaply) whenever another
+    exec holds the lock, and a single unbounded call previously blocked the
+    whole launcher, which is why every call here is time-bounded.
+    """
     while not stop_event.is_set():
         stop_event.wait(KEEP_ALIVE_INTERVAL)
         if stop_event.is_set():
             break
+        # Degrade gracefully instead of queueing behind an in-flight command.
+        if not EXEC_LOCK.acquire(blocking=False):
+            continue
         try:
-            res = run_cmd(f"colab exec -s {SESSION_NAME} -f keepalive_code.py", capture=True)
-            out = res.stdout.strip()
+            cmd = f"colab exec -s {SESSION_NAME} --timeout 20 -f keepalive_code.py"
+            res = run_cmd(cmd, capture=True, timeout=120)
+            out = (res.stdout or "").strip()
             if "Keep-Alive Pulse" in out:
-                # Print discreet pulse timestamp in terminal
                 t_str = time.strftime("%H:%M:%S")
                 print(f"\n{C_GRAY}[{t_str}] ⚡ VRAM Pulse Active (~12MB tensor warm){C_RESET}\n{C_CYAN}[colab-gaming] > {C_RESET}", end="", flush=True)
+            elif res.returncode == 124:
+                _reset_kernel()
         except Exception:
             pass
+        finally:
+            EXEC_LOCK.release()
 
 # -------------------------------------------------------------
 # 5. Main Interactive Shell
@@ -1129,7 +1290,7 @@ def main():
         ts_ip = check_and_wait_tailscale(latest_links.get('tailscale_login_url'))
         if ts_ip:
             log_step("TS", f"Synchronizing Sunshine with active Tailscale IP: {ts_ip}...")
-            run_cmd(f"colab exec -s {SESSION_NAME} -f sync_ts_ip.py", capture=True)
+            run_exec("-f sync_ts_ip.py", idle_timeout=30)
             log_ok("Sunshine configuration synced with Tailscale.")
 
             # Tailscale is now authorized -> publish the funnel and issue the web PIN
@@ -1203,15 +1364,15 @@ def main():
                 trigger_pulse()
             elif cmd in ["/gtav", "/gta", "gtav", "gta"]:
                 if arg.lower() == "log":
-                    run_cmd(f"colab exec -s {SESSION_NAME} \"tail -n 40 /var/log/services/gta_setup.log 2>/dev/null || echo 'No GTA log yet'\"")
+                    run_exec("\"tail -n 40 /var/log/services/gta_setup.log 2>/dev/null || echo 'No GTA log yet'\"", idle_timeout=20)
                 elif arg.lower() == "add":
-                    run_cmd(f"colab exec -s {SESSION_NAME} --env GTA_STEP=add -f gta_setup.py --timeout 0")
+                    run_exec("--env GTA_STEP=add -f gta_setup.py", idle_timeout=60, hard_timeout=None, retry_on_timeout=False)
                 elif arg.lower() == "play":
-                    run_cmd(f"colab exec -s {SESSION_NAME} \"DISPLAY=:1 nohup setsid bash /content/gta_launch.sh >/var/log/services/gta_run.log 2>&1 & sleep 2; echo launched\"")
+                    run_exec("\"DISPLAY=:1 nohup setsid bash /content/gta_launch.sh >/var/log/services/gta_run.log 2>&1 & sleep 2; echo launched\"", idle_timeout=20)
                 elif arg.lower() in ("status", "st"):
-                    run_cmd(f"colab exec -s {SESSION_NAME} -f gta_status.py")
+                    run_exec("-f gta_status.py", capture=False, idle_timeout=60, hard_timeout=300)
                 elif arg.lower() in ("verify", "gpu", "accel"):
-                    run_cmd(f"colab exec -s {SESSION_NAME} --env GTA_STEP=verify -f gta_setup.py")
+                    run_exec("--env GTA_STEP=verify -f gta_setup.py", capture=False, idle_timeout=60, hard_timeout=420)
                 else:
                     install_gta_v()
             elif cmd in ["/region", "/zone", "region", "zone"]:
@@ -1240,6 +1401,17 @@ def main():
                 elif arg:
                     log_warn("Usage: /region [sg|us|eu|any]  "
                              "(or /region with no args to show the zone)")
+            elif cmd in ["/kernel", "kernel"]:
+                log_step("KERNEL", "Discarding the cached remote kernel...")
+                if _reset_kernel():
+                    res = run_exec("-f check_ts.py", idle_timeout=30)
+                    if res.returncode == 0:
+                        log_ok("Fresh kernel is responding.")
+                    else:
+                        log_warn("Kernel reset, but the probe still failed. "
+                                 "The VM may be gone — try /adopt or start.bat.")
+                else:
+                    log_ok("No cached kernel to reset (the next exec boots one).")
             elif cmd in ["/adopt", "adopt"]:
                 log_step("ADOPT", "Re-attaching to any live Colab VM...")
                 if adopt_orphans() or session_is_named():

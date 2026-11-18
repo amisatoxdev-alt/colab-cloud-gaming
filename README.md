@@ -201,6 +201,31 @@ The script will interactively guide you:
 > as a phantom row named `colab` at endpoint `No`. That kept `has_any_session()` true forever,
 > so allocation never ran and `stop_session()` reported failure after a successful stop. A
 > genuine row must carry a `Hardware:` field or a `gpu-*`/`tpu-*` runtime id.
+
+> [!WARNING]
+> **A silent console = a wedged kernel, not a dead VM.** `colab exec` drives **one
+> persistent Jupyter kernel per session**. If that kernel stops responding — a cell that never
+> finishes, a daemon holding its output stream open — then *every* later `exec` waits on it
+> forever. The launcher goes quiet right after `--- TAILSCALE MESH NETWORK STATUS ---`, prints
+> no error, and accepts no input, while the VM stays alive and billing.
+>
+> Two independent defects made this unrecoverable, both now fixed:
+>
+> | Defect | Fix |
+> |---|---|
+> | `run_cmd` had **no timeout** — one wedged exec blocked the launcher permanently | Every call is time-bounded and returns `124` on expiry |
+> | `subprocess.run(timeout=)` does not work on Windows — it kills only `cmd.exe`, the orphaned grandchild keeps the pipe open (measured: `timeout=3` still blocked for 30s) | Output is captured into temp **files** (nothing to keep open) and on expiry the whole tree is killed with `taskkill /F /T` |
+>
+> Measured after the fix: `timeout=3` on a 30-second sleep returns in **3.2s**. `run_exec()`
+> also serializes all execs behind a lock — the keepalive thread and the console must never
+> drive the same kernel at once, because two concurrent execs queue rather than run in parallel.
+> On a wedge `run_exec` clears the cached `kernel_id` (which makes the CLI boot a fresh kernel
+> on the same VM) and retries once.
+>
+> **If the console ever goes silent:** run `/kernel`, or clear `kernel_id` / `session_id` from
+> `~/.config/colab-cli/sessions.json`. Verified: a `print('PONG')` that had been timing out for
+> minutes returned in 5.4s immediately after the cached `kernel_id` was dropped. Do **not**
+> re-allocate — the VM is fine.
 - Start the automated keepalive pulse loop.
 
 ### 2. Connect via Moonlight
@@ -243,6 +268,7 @@ While the background keep-alive pulse keeps your GPU warm, you can run commands 
 - `/region eu`  : Stop and re-allocate until an EU zone is assigned.
 - `/region any` : Accept whatever region Colab gives (no retry).
 - `/adopt`      : Re-attach a live VM that is registered under another name (non-destructive).
+- `/kernel`     : Reset a wedged remote kernel — fixes a console that has gone silent.
 - `/free`       : Release every server assignment **except `t4`** — this destroys those VMs.
 - `/pulse`      : Manually trigger an immediate PyTorch VRAM pulse.
 - `/gtav`       : Install GTA V (Wine + DXVK + Steam shortcut) if not done at startup.
