@@ -315,22 +315,35 @@ def extract():
 # --------------------------------------------------------------------------
 # 4. Stage into a Steam library
 # --------------------------------------------------------------------------
+def find_game_root():
+    """Locate the directory that holds gta_data, however deep the repack nests.
+
+    The old lookup only checked STAGE_DIR/<one level>/, which misses archives
+    that wrap the game in an extra folder (e.g. "GTA V/gta_data" or
+    "OptiJuegos/GTA V/gta_data"). Walking the tree and using the parent of the
+    first gta_data we meet handles every layout we have seen.
+    """
+    if os.path.isdir(GAME_DATA):
+        return GAME_ROOT
+    for dirpath, dirnames, _ in os.walk(STAGE_DIR):
+        if "gta_data" in dirnames:
+            return dirpath
+    return None
+
+
 def stage():
-    src = None
-    for cand in glob.glob(f"{STAGE_DIR}/*/"):
-        if os.path.isdir(os.path.join(cand, "gta_data")):
-            src = cand.rstrip("/")
-            break
+    os.makedirs(f"{STEAM_LIB}/steamapps/common", exist_ok=True)
+    src = find_game_root()
     if not src:
-        log("No 'gta_data' folder found in the extracted tree")
+        log(f"No 'gta_data' folder found anywhere under {STAGE_DIR}")
+        log("Extraction may have failed, or this archive is not the expected repack.")
         return False
 
-    os.makedirs(f"{STEAM_LIB}/steamapps/common", exist_ok=True)
-    if not os.path.isdir(GAME_ROOT):
+    if os.path.isdir(GAME_ROOT):
+        log(f"Already staged at {GAME_ROOT}")
+    else:
         log(f"Moving {src} -> {GAME_ROOT}")
         sh(f"mv '{src}' '{GAME_ROOT}'", check=True)
-    else:
-        log(f"Already staged at {GAME_ROOT}")
 
     # libraryfolders.vdf so Steam knows this library exists
     with open(f"{STEAM_LIB}/steamapps/libraryfolders.vdf", "w") as f:
