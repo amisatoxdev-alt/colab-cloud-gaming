@@ -49,3 +49,4 @@ else:
         report["log"] = log_content
 
 print(json.dumps(report))
+

@@ -4,9 +4,9 @@ import re
 import subprocess
 
 links = {
-    "moonlight_url": "Pending",
-    "sunshine_url": "Pending",
-    "desktop_url": "Pending",
+    "funnel_url": "Run /funnel to publish",
+    "moonlight_pin": "",
+    "pin_command": "/opt/moonlightweb/bin/MoonlightWeb --new-pin",
     "sunshine_creds": "admin / Sunshine123!",
     "tailscale_ip": "",
     "sunshine_direct_tailscale": "Authorize Tailscale",
@@ -27,32 +27,7 @@ for path in ['/tmp/links.json', '/var/log/services/links.json']:
         except Exception:
             pass
 
-# 2. Directly extract latest URLs from tunnel logs if pending or missing
-def extract_cf_url(log_path):
-    if os.path.exists(log_path):
-        try:
-            with open(log_path, 'r') as f:
-                content = f.read()
-            matches = re.findall(r'https://[a-zA-Z0-9-]+\.trycloudflare\.com', content)
-            if matches:
-                return matches[-1]
-        except Exception:
-            pass
-    return None
-
-cf_map = {
-    "sunshine_url": "/var/log/tunnels/sunshine_cf.log",
-    "moonlight_url": "/var/log/tunnels/moonlight_cf.log",
-    "desktop_url": "/var/log/tunnels/desktop_cf.log"
-}
-
-for key, log_file in cf_map.items():
-    if links.get(key) in (None, "", "Pending"):
-        url = extract_cf_url(log_file)
-        if url:
-            links[key] = url
-
-# 3. Check live Tailscale IP
+# 2. Live Tailscale IP
 try:
     ts_proc = subprocess.run("tailscale ip -4 2>/dev/null", shell=True, text=True, capture_output=True)
     ts_ip = ts_proc.stdout.strip()
@@ -62,12 +37,32 @@ try:
 except Exception:
     pass
 
-# 4. Check live Tailscale Funnel
+# 3. Live Tailscale Funnel (primary public endpoint)
 try:
     fn_proc = subprocess.run("tailscale funnel status 2>/dev/null", shell=True, text=True, capture_output=True)
-    m = re.search(r'https://[^\s]+\.ts\.net', fn_proc.stdout)
+    m = re.search(r'https://[A-Za-z0-9.\-]+\.ts\.net', fn_proc.stdout)
     if m:
-        links["funnel_url"] = m.group(0) + "/"
+        links["funnel_url"] = m.group(0).rstrip("/") + "/"
+    else:
+        st = subprocess.run("tailscale status --json 2>/dev/null", shell=True, text=True, capture_output=True).stdout
+        dns = json.loads(st).get("Self", {}).get("DNSName", "").rstrip(".")
+        if dns:
+            links["funnel_url"] = f"https://{dns}/"
+except Exception:
+    pass
+
+# 4. Live MoonlightWeb Access PIN (single-use, one per remote browser/device)
+try:
+    BIN = "/opt/moonlightweb/bin/MoonlightWeb"
+    out = subprocess.run(f"{BIN} --status 2>&1", shell=True, text=True, capture_output=True).stdout
+    pm = re.search(r"Access PIN\s+(\d{4,8})", out)
+    if pm:
+        links["moonlight_pin"] = pm.group(1)
+    else:
+        new_out = subprocess.run(f"{BIN} --new-pin 2>&1", shell=True, text=True, capture_output=True).stdout
+        pm2 = re.search(r"Access PIN\s+(\d{4,8})", new_out)
+        if pm2:
+            links["moonlight_pin"] = pm2.group(1)
 except Exception:
     pass
 

@@ -33,9 +33,8 @@ if os.path.exists("/tmp/desktop_mode.txt"):
 log(f"Starting background downloads (Desktop Mode: {desktop_mode.upper()})...")
 DOWNLOADS = {
     "/tmp/chrome.deb": "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb",
-    "/tmp/cloudflared.deb": "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb",
     "/tmp/sunshine.deb": "https://github.com/LizardByte/Sunshine/releases/download/v2026.914.233613/sunshine_2026.914.233613-1+ubuntu24.04_amd64.deb",
-    "/tmp/moonlight-web.tar.gz": "https://github.com/MrCreativ3001/moonlight-web-stream/releases/download/v3.0.2/moonlight-web-x86_64-unknown-linux-gnu.tar.gz",
+    "/tmp/moonlightweb.deb": "https://github.com/linckosz/moonlight-web/releases/download/v0.4.3/moonlightweb-0.4.3-linux-x64.deb",
     "/root/nvidia-wallpaper.jpg": "https://wallpapercat.com/w/full/3/b/2/1255774-2500x1341-desktop-hd-nvidia-wallpaper-photo.jpg",
     "/root/win11-wallpaper.jpg": "https://raw.githubusercontent.com/viridivn/windows11wallpapers/master/Windows/img19.jpg"
 }
@@ -157,7 +156,7 @@ pkgs = [
     "libxtst6:i386", "libxrandr2:i386", "libxrender1:i386", "libgtk2.0-0t64:i386",
     "libpipewire-0.3-0t64:i386", "libpulse0:i386", "libgdk-pixbuf-2.0-0:i386",
     "libxcb-res0:i386", "libvdpau1:i386", "libbz2-1.0:i386", "dbus-x11",
-    "/tmp/chrome.deb", "/tmp/cloudflared.deb", "/tmp/sunshine.deb"
+    "/tmp/chrome.deb", "/tmp/moonlightweb.deb", "/tmp/sunshine.deb"
 ]
 log("Executing unified APT package installation...")
 run(f"DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends {' '.join(pkgs)} >/dev/null 2>&1", check=False)
@@ -178,19 +177,10 @@ if not os.path.exists(f"{steam_dir}/bootstrap.tar.xz"):
 run("touch /home/user/.steam/steam_app_installed", check=False)
 run("chown -R user:user /home/user/.steam /home/user/.local", check=False)
 
-# Set up Moonlight Web
-if not os.path.exists("/opt/moonlight-web/web-server"):
-    run("mkdir -p /opt/moonlight-web && tar -xzf /tmp/moonlight-web.tar.gz -C /opt/moonlight-web --strip-components=1", check=False)
-    run("chmod +x /opt/moonlight-web/web-server", check=False)
-    run("cd /opt/moonlight-web && ./web-server config generate >/dev/null 2>&1 || true", check=False)
-    try:
-        with open('/opt/moonlight-web/server/config.json', 'r') as f:
-            cfg = json.load(f)
-        cfg['web_server']['bind_address'] = '0.0.0.0:8090'
-        with open('/opt/moonlight-web/server/config.json', 'w') as f:
-            json.dump(cfg, f, indent=2)
-    except Exception:
-        pass
+# Set up official MoonlightWeb (moonlightweb.top) - installed via .deb package
+if not os.path.exists("/opt/moonlightweb/bin/MoonlightWeb"):
+    run("dpkg -i /tmp/moonlightweb.deb >/dev/null 2>&1 || apt-get install -f -y >/dev/null 2>&1", check=False)
+run("ln -sf /opt/moonlightweb/bin/MoonlightWeb /usr/local/bin/moonlightweb 2>/dev/null || true", check=False)
 
 # Set up noVNC
 if not os.path.exists("/opt/noVNC"):
@@ -575,10 +565,10 @@ with open("/etc/X11/xorg.conf", "w") as f:
     f.write(xorg_conf.strip() + "\n")
 
 # -------------------------------------------------------------
-# 5. Starting All Services (Xorg, PulseAudio, Openbox, Tailscale, Cloudflare)
+# 5. Starting All Services (Xorg, PulseAudio, Openbox, Tailscale, MoonlightWeb)
 # -------------------------------------------------------------
 log("Starting display, audio, and background daemons...")
-subprocess.run("killall -9 Xorg Xvfb x11vnc openbox sunshine web-server cloudflared tailscaled 2>/dev/null || true", shell=True)
+subprocess.run("killall -9 Xorg Xvfb x11vnc openbox sunshine cloudflared MoonlightWeb tailscaled 2>/dev/null || true", shell=True)
 time.sleep(1)
 subprocess.run("rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 /tmp/com.google.Chrome.* /root/.config/google-chrome/Singleton*", shell=True)
 
@@ -697,29 +687,41 @@ ts_ip = subprocess.run("tailscale ip -4 2>/dev/null || true", shell=True, text=T
 if not ts_ip or " " in ts_ip:
     ts_ip = "127.0.0.1"
 
-# 5.6 Moonlight Web
-spawn_daemon(["/opt/moonlight-web/web-server", "run"], "moonlight_web.log", cwd="/opt/moonlight-web")
+# 5.6 MoonlightWeb (official moonlightweb.top client) + Tailscale Funnel
+log("Starting MoonlightWeb web streaming server on port 8090...")
+mw_env = env.copy()
+mw_env["MW_SERVICE"] = "1"
+spawn_daemon(["/opt/moonlightweb/bin/MoonlightWeb", "--port", "8090", "--autostart"],
+             "moonlightweb.log", env_override=mw_env)
+time.sleep(4)
 
-# 5.7 Cloudflare Tunnels
-log("Establishing Cloudflare Tunnels...")
-subprocess.run("rm -f /var/log/tunnels/*.log", shell=True)
-spawn_daemon(["cloudflared", "tunnel", "--url", "http://127.0.0.1:8090", "--logfile", "/var/log/tunnels/moonlight_cf.log"], "cf_moonlight.log")
-spawn_daemon(["cloudflared", "tunnel", "--url", "https://127.0.0.1:47990", "--http-host-header", "localhost", "--no-tls-verify", "--logfile", "/var/log/tunnels/sunshine_cf.log"], "cf_sunshine.log")
-spawn_daemon(["cloudflared", "tunnel", "--url", "http://127.0.0.1:6080", "--logfile", "/var/log/tunnels/desktop_cf.log"], "cf_desktop.log")
+# 5.7 Tailscale Funnel (public HTTPS, replaces Cloudflare tunnels entirely)
+log("Publishing MoonlightWeb through Tailscale Funnel...")
+subprocess.run("tailscale funnel --bg --yes 8090 > /var/log/tunnels/funnel.log 2>&1", shell=True)
 
-def extract_cf_url(log_file, retries=15):
-    for _ in range(retries):
-        if os.path.exists(log_file):
-            content = open(log_file).read()
-            matches = re.findall(r'https://[a-zA-Z0-9-]+\.trycloudflare\.com', content)
-            if matches:
-                return matches[-1]
-        time.sleep(1)
-    return "Pending"
+funnel_url = ""
+try:
+    f_stat = subprocess.run("tailscale funnel status 2>&1", shell=True, text=True, capture_output=True).stdout
+    m = re.search(r'https://[A-Za-z0-9.\-]+\.ts\.net', f_stat)
+    if m:
+        funnel_url = m.group(0)
+    else:
+        s_raw = subprocess.run("tailscale status --json 2>/dev/null", shell=True, text=True, capture_output=True).stdout
+        dns_name = json.loads(s_raw).get("Self", {}).get("DNSName", "").rstrip(".")
+        if dns_name:
+            funnel_url = f"https://{dns_name}"
+except Exception:
+    pass
 
-moonlight_url = extract_cf_url("/var/log/tunnels/moonlight_cf.log")
-sunshine_url = extract_cf_url("/var/log/tunnels/sunshine_cf.log")
-desktop_url = extract_cf_url("/var/log/tunnels/desktop_cf.log")
+# 5.7b Generate the one-time Access PIN for remote browsers (single-use per device)
+def mw_access_pin(generate_new=False):
+    bin_path = "/opt/moonlightweb/bin/MoonlightWeb"
+    flag = "--new-pin" if generate_new else "--status"
+    out = subprocess.run(f"{bin_path} {flag} 2>&1", shell=True, text=True, capture_output=True).stdout
+    pm = re.search(r"Access PIN\s+(\d{4,8})", out)
+    return pm.group(1) if pm else ""
+
+moonlight_pin = mw_access_pin(generate_new=True) or mw_access_pin(False)
 
 # 5.8 Sunshine Configuration
 allowed_origins = [
@@ -730,8 +732,9 @@ allowed_origins = [
 ]
 if ts_ip and ts_ip != "127.0.0.1":
     allowed_origins.append(f"https://{ts_ip}:47990")
-if sunshine_url and "trycloudflare.com" in sunshine_url:
-    allowed_origins.insert(0, sunshine_url)
+if funnel_url:
+    allowed_origins.append(funnel_url)
+    allowed_origins.append(f"{funnel_url}:443")
 
 os.makedirs("/root/.config/sunshine", exist_ok=True)
 os.makedirs("/home/user/.config/sunshine", exist_ok=True)
@@ -806,11 +809,11 @@ ts_match = re.search(r'https://login\.tailscale\.com/a/[a-zA-Z0-9]+', ts_res.std
 tailscale_url = ts_match.group(0) if ts_match else "Check 'tailscale status'"
 
 links = {
-    "moonlight_url": moonlight_url,
-    "sunshine_url": sunshine_url,
+    "funnel_url": f"{funnel_url}/" if funnel_url else "Run /funnel to publish",
+    "moonlight_pin": moonlight_pin,
+    "pin_command": "/opt/moonlightweb/bin/MoonlightWeb --new-pin",
     "sunshine_direct_tailscale": f"https://{ts_ip}:47990" if ts_ip != "127.0.0.1" else "Authorize Tailscale",
     "sunshine_creds": "admin / Sunshine123!",
-    "desktop_url": desktop_url,
     "tailscale_ip": ts_ip if ts_ip != "127.0.0.1" else "",
     "tailscale_login_url": tailscale_url
 }

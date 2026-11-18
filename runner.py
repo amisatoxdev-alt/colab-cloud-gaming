@@ -159,7 +159,7 @@ def get_links(verbose=False):
                     return json.loads(line)
                 except Exception:
                     pass
-        m = re.findall(r'\{[^{}]*"(?:sunshine_url|moonlight_url)"[^{}]*\}', out, re.DOTALL)
+        m = re.findall(r'\{[^{}]*"(?:funnel_url|moonlight_pin)"[^{}]*\}', out, re.DOTALL)
         if m:
             try:
                 return json.loads(m[-1])
@@ -207,10 +207,8 @@ def make_card_row(label, val, val_color=C_WHITE, max_len=62):
     return f"{C_CYAN}│  {C_YELLOW}{label:<22}{C_CYAN}: {val_color}{val_str:<{max_len}}{C_CYAN}│{C_RESET}"
 
 def print_dashboard(links, ts_ip=None):
-    desktop_url = links.get('desktop_url', '')
-
     ts_display = ts_ip if ts_ip else links.get('tailscale_ip', 'Not Linked')
-    if ts_display and ts_display != "127.0.0.1" and ts_display != "Not Linked":
+    if ts_display and ts_display not in ("127.0.0.1", "Not Linked"):
         sunshine_ts = f"https://{ts_display}:47990"
     else:
         sunshine_ts = "Enable via /tailscale"
@@ -227,26 +225,28 @@ def print_dashboard(links, ts_ip=None):
     pad_right = total_inner - visual_len - pad_left
     header = f"{C_CYAN}│" + " " * pad_left + f"{C_WHITE}{C_BOLD}" + title + f"{C_CYAN}" + " " * pad_right + f"│{C_RESET}"
 
-    funnel_display = links.get('funnel_url', 'Run /funnel to enable')
+    funnel_display = links.get('funnel_url') or 'Run /funnel to publish'
+    pin_display = links.get('moonlight_pin') or 'Run /pin to generate'
     lines = [
         f"\n{top}",
         header,
         sep,
-        make_card_row("Moonlight Host IP", ts_display, C_GREEN + C_BOLD),
-        make_card_row("Tailscale Funnel (Web)", funnel_display, C_GREEN + C_BOLD),
-        make_card_row("Direct Sunshine URL", sunshine_ts, C_WHITE),
-        make_card_row("Public Sunshine WebUI", links.get('sunshine_url', 'Pending'), C_WHITE),
+        make_card_row("MoonlightWeb (Public)", funnel_display, C_GREEN + C_BOLD),
+        make_card_row("Access PIN (1 use)", pin_display, C_YELLOW + C_BOLD),
+        make_card_row("New PIN Command", "/pin  (or /pin new)", C_WHITE),
+        sep,
+        make_card_row("Sunshine Direct (TS)", sunshine_ts, C_WHITE),
         make_card_row("Sunshine Credentials", links.get('sunshine_creds', 'admin / Sunshine123!'), C_WHITE),
-        make_card_row("Interactive Desktop", desktop_url, C_WHITE),
-        make_card_row("Moonlight Web Client", links.get('moonlight_url', 'Pending'), C_WHITE),
+        make_card_row("Tailscale Node IP", ts_display, C_WHITE),
         bot + "\n"
     ]
     print("\n".join(lines))
 
 # -------------------------------------------------------------
-# 3. Interactive Command Actions (/pair, /cflink, /accel, /unfreeze, etc.)
+# 3. Interactive Command Actions (/pair, /pin, /accel, /unfreeze, etc.)
 # -------------------------------------------------------------
 def pair_pin(pin):
+    """Pair a classic Moonlight/native client to Sunshine using a 4-digit PIN."""
     pin = pin.strip()
     if not pin or not pin.isdigit():
         log_err("Please provide a valid numeric 4-digit PIN (e.g., /pair 1234)")
@@ -298,44 +298,64 @@ else:
     elif "NO_PENDING_REQUEST" in out:
         log_warn("No pending pairing request detected from Moonlight!")
         print(f"    {C_YELLOW}💡 Tip:{C_RESET} {C_WHITE}Open Moonlight on your client device and click on the Host PC first so the PIN prompt appears on your screen.{C_RESET}")
-        print(f"    {C_YELLOW}💡 Alternative:{C_RESET} {C_WHITE}You can also open the Sunshine WebUI at {C_CYAN}{latest_links.get('sunshine_url', '')}/pin{C_RESET} and enter PIN {C_BOLD}{pin}{C_RESET} directly.")
+        print(f"    {C_YELLOW}💡 Alternative:{C_RESET} {C_WHITE}Open the Sunshine WebUI at {C_CYAN}{latest_links.get('sunshine_direct_tailscale', '')}/pin{C_RESET} and enter PIN {C_BOLD}{pin}{C_RESET} directly.{C_RESET}")
     else:
         log_err(f"Pairing response: {out}")
-        print(f"    {C_YELLOW}💡 Tip:{C_RESET} {C_WHITE}Ensure Sunshine WebUI is reachable and enter the PIN manually if required: {C_CYAN}{latest_links.get('sunshine_url', '')}/pin{C_RESET}")
+        print(f"    {C_YELLOW}💡 Tip:{C_RESET} {C_WHITE}Ensure Sunshine WebUI is reachable and enter the PIN manually if required: {C_CYAN}{latest_links.get('sunshine_direct_tailscale', '')}/pin{C_RESET}")
 
-def show_cflinks():
+def show_pin(new=False):
+    """Show or generate the MoonlightWeb one-time Access PIN for a new browser/device."""
     global latest_links
-    fresh = get_links(verbose=False)
-    if fresh:
-        latest_links.update(fresh)
+    action = " --env MW_NEW=1" if new else ""
+    print(f"\n{C_CYAN}[*] {'Generating a fresh' if new else 'Reading current'} MoonlightWeb Access PIN...{C_RESET}", flush=True)
+    res = run_cmd(f"colab exec -s {SESSION_NAME} -f mw_pin.py{action}", capture=True)
+    out = res.stdout.strip()
+    data = {}
+    for line in out.splitlines():
+        line = line.strip()
+        if line.startswith("{") and line.endswith("}"):
+            try:
+                data = json.loads(line)
+                break
+            except Exception:
+                pass
 
-    sunshine_url = latest_links.get('sunshine_url', 'Pending')
-    moonlight_url = latest_links.get('moonlight_url', 'Pending')
-    desktop_url = latest_links.get('desktop_url', '')
+    pin = data.get("pin", "")
+    url = data.get("funnel_url", "") or latest_links.get("funnel_url", "")
+    if pin:
+        latest_links["moonlight_pin"] = pin
+        if url:
+            latest_links["funnel_url"] = url
 
     w_val = 62
     w_label = 22
-    total_inner = 2 + w_label + 2 + w_val  # 88
+    total_inner = 2 + w_label + 2 + w_val
     top = f"{C_CYAN}╭" + "─" * total_inner + f"╮{C_RESET}"
     sep = f"{C_CYAN}├" + "─" * total_inner + f"┤{C_RESET}"
     bot = f"{C_CYAN}╰" + "─" * total_inner + f"╯{C_RESET}"
-    title = "🌐 ACTIVE CLOUDFLARE PUBLIC TUNNELS 🌐"
-    visual_len = len(title) + 2
-    pad_left = (total_inner - visual_len) // 2
-    pad_right = total_inner - visual_len - pad_left
+    title = "🔐 MOONLIGHTWEB ACCESS PIN (SINGLE-USE) 🔐"
+    pad_left = (total_inner - len(title) - 2) // 2
+    pad_right = total_inner - len(title) - 2 - pad_left
     header = f"{C_CYAN}│" + " " * pad_left + f"{C_WHITE}{C_BOLD}" + title + f"{C_CYAN}" + " " * pad_right + f"│{C_RESET}"
 
     lines = [
-        f"\n{top}",
-        header,
-        sep,
-        make_card_row("Sunshine WebUI (PIN)", sunshine_url, C_WHITE),
-        make_card_row("Moonlight Web Client", moonlight_url, C_WHITE),
-        make_card_row("Interactive Desktop", desktop_url, C_WHITE),
-        make_card_row("Web Credentials", "admin / Sunshine123!", C_GREEN),
-        bot + "\n"
+        f"\n{top}", header, sep,
+        make_card_row("Web Client URL", url or "Run /funnel first", C_GREEN + C_BOLD),
+        make_card_row("Access PIN", pin or "Failed - try again", C_YELLOW + C_BOLD),
+        make_card_row("Validity", "Single-use (1 browser/device)", C_WHITE),
+        make_card_row("Next Device", "Run /pin new", C_WHITE),
     ]
+    if data.get("pin_fresh"):
+        lines.append(make_card_row("Status", "FRESH PIN GENERATED", C_GREEN + C_BOLD))
+    lines += [bot + "\n"]
     print("\n".join(lines))
+
+    if pin:
+        print(f"{C_WHITE}  1. Open {C_CYAN}{C_BOLD}{url or 'the funnel URL'}{C_RESET}{C_WHITE} in the new device's browser.{C_RESET}")
+        print(f"{C_WHITE}  2. Enter PIN {C_YELLOW}{C_BOLD}{pin}{C_RESET}{C_WHITE} once. It then stays authorized on that browser.{C_RESET}")
+        print(f"{C_WHITE}  3. For another device run {C_CYAN}/pin new{C_RESET}{C_WHITE} to mint a new PIN.{C_RESET}\n")
+    else:
+        log_err("Could not obtain a PIN from MoonlightWeb. Try /pin new, or check /var/log/services/moonlightweb.log")
 
 def show_accel():
     print(f"\n{C_CYAN}[*] Verifying GPU Hardware 3D & Video Acceleration on session '{SESSION_NAME}'...{C_RESET}", flush=True)
@@ -552,18 +572,18 @@ def show_help():
 {C_CYAN}╭─────────────────────────────────────────────────────────────────────────────╮
 │                         {C_WHITE}{C_BOLD}COMMAND CONSOLE MANUAL{C_CYAN}                              │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  {C_GREEN}/pair <4-digit PIN>{C_CYAN} : {C_WHITE}Instantly pair Moonlight client (e.g. /pair 1234)   │
-│  {C_GREEN}/funnel{C_CYAN}             : {C_WHITE}Start Tailscale Funnel for friends (no app needed)   │
-│  {C_GREEN}/cflink{C_CYAN}             : {C_WHITE}Display all active Cloudflare public tunnel links    │
-│  {C_GREEN}/accel{C_CYAN}              : {C_WHITE}Verify OpenGL 4.6, Vulkan 1.4 & NVENC hardware accel │
-│  {C_GREEN}/unfreeze{C_CYAN}           : {C_WHITE}Release stuck Shift/Alt/Ctrl keys and unfreeze input │
-│  {C_GREEN}/links{C_CYAN}              : {C_WHITE}Display full endpoint dashboard with credentials     │
-│  {C_GREEN}/status{C_CYAN}             : {C_WHITE}Check GPU temperature, VRAM usage, and active stream │
-│  {C_GREEN}/restart{C_CYAN}            : {C_WHITE}Cleanly restart Sunshine & Openbox without VM reboot │
-│  {C_GREEN}/tailscale{C_CYAN}          : {C_WHITE}Query Tailscale mesh connection state and node IP    │
-│  {C_GREEN}/pulse{C_CYAN}              : {C_WHITE}Trigger an immediate 12MB VRAM PyTorch keep-alive    │
-│  {C_GREEN}/help{C_CYAN}               : {C_WHITE}Show this list of commands                           │
-│  {C_GREEN}/exit{C_CYAN}               : {C_WHITE}Stop keep-alive and exit launcher                    │
+│  {C_GREEN}/pin{C_CYAN}              : {C_WHITE}Show current MoonlightWeb Access PIN (web login)    │
+│  {C_GREEN}/pin new{C_CYAN}          : {C_WHITE}Mint a fresh single-use PIN for a new device        │
+│  {C_GREEN}/funnel{C_CYAN}           : {C_WHITE}Publish MoonlightWeb publicly via Tailscale Funnel  │
+│  {C_GREEN}/accel{C_CYAN}            : {C_WHITE}Verify OpenGL 4.6, Vulkan 1.4 & NVENC hardware accel │
+│  {C_GREEN}/unfreeze{C_CYAN}         : {C_WHITE}Release stuck Shift/Alt/Ctrl keys and unfreeze input │
+│  {C_GREEN}/links{C_CYAN}            : {C_WHITE}Display full endpoint dashboard with PIN & creds     │
+│  {C_GREEN}/status{C_CYAN}           : {C_WHITE}Check GPU temperature, VRAM usage, and active stream │
+│  {C_GREEN}/restart{C_CYAN}          : {C_WHITE}Cleanly restart Sunshine & MoonlightWeb services     │
+│  {C_GREEN}/tailscale{C_CYAN}        : {C_WHITE}Query Tailscale mesh connection state and node IP    │
+│  {C_GREEN}/pulse{C_CYAN}            : {C_WHITE}Trigger an immediate 12MB VRAM PyTorch keep-alive    │
+│  {C_GREEN}/help{C_CYAN}             : {C_WHITE}Show this list of commands                           │
+│  {C_GREEN}/exit{C_CYAN}             : {C_WHITE}Stop keep-alive and exit launcher                    │
 ╰─────────────────────────────────────────────────────────────────────────────╯{C_RESET}
 """
     print(help_text)
@@ -613,7 +633,7 @@ def main():
             run_cmd(f"colab exec -s {SESSION_NAME} -f sync_ts_ip.py", capture=True)
             log_ok("Sunshine configuration synced with Tailscale.")
     else:
-        print(f"      {C_GRAY}Tailscale skipped. Using Cloudflare tunnels.{C_RESET}")
+        print(f"      {C_GRAY}Tailscale skipped. MoonlightWeb will only be reachable locally.{C_RESET}")
 
     print_dashboard(latest_links, ts_ip)
 
@@ -624,9 +644,9 @@ def main():
     # Friendly startup tip and instructions
     print(f"\n{C_CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{C_RESET}")
     print(f"{C_GREEN}[✓] System is fully ready!{C_RESET}")
-    print(f"    {C_YELLOW}💡 Moonlight Pairing Tip:{C_RESET} {C_WHITE}Open Moonlight on your device, add/click the host PC.{C_RESET}")
-    print(f"       {C_WHITE}When Moonlight displays the PIN prompt, type {C_BOLD}{C_GREEN}/pair <PIN>{C_RESET}{C_WHITE} here to connect instantly.{C_RESET}")
-    print(f"       {C_WHITE}You can also view Cloudflare links at any time with {C_BOLD}{C_CYAN}/cflink{C_RESET}{C_WHITE} or verify GPU with {C_BOLD}{C_CYAN}/accel{C_RESET}{C_WHITE}.{C_RESET}")
+    print(f"    {C_YELLOW}💡 Web Login PIN:{C_RESET} {C_WHITE}Open the Funnel URL in any browser; it asks for a one-time PIN.{C_RESET}")
+    print(f"       {C_WHITE}Type {C_BOLD}{C_GREEN}/pin{C_RESET}{C_WHITE} to see it, or {C_BOLD}{C_GREEN}/pin new{C_RESET}{C_WHITE} to mint a fresh PIN for each new device.{C_RESET}")
+    print(f"       {C_WHITE}Native Moonlight clients pair with {C_BOLD}{C_GREEN}/pair <PIN>{C_RESET}{C_WHITE}. Verify GPU with {C_BOLD}{C_CYAN}/accel{C_RESET}{C_WHITE}.{C_RESET}")
     print(f"{C_CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{C_RESET}\n")
 
     # Interactive live command loop
@@ -644,8 +664,8 @@ def main():
                 if not arg:
                     arg = input(f"{C_YELLOW}[?] Enter 4-digit Moonlight PIN: {C_RESET}").strip()
                 pair_pin(arg)
-            elif cmd in ["/cflink", "/cf", "cflink", "cf"]:
-                show_cflinks()
+            elif cmd in ["/pin", "pin", "/newpin", "/pinnew"]:
+                show_pin(new=(arg.lower() in ("new", "gen", "fresh", "-n", "n")))
             elif cmd in ["/accel", "/gpu", "accel", "gpu"]:
                 show_accel()
             elif cmd in ["/unfreeze", "/fix", "unfreeze", "fix"]:

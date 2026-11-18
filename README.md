@@ -1,4 +1,4 @@
-# Colab Cloud Gaming
+﻿# Colab Cloud Gaming
 
 High-performance, ultra-low-latency game and desktop streaming on Google Colab (Tesla T4 GPU) using Sunshine, Moonlight, hardware Xorg with NvFBC capture, and Tailscale DERP networking.
 
@@ -16,10 +16,11 @@ High-performance, ultra-low-latency game and desktop streaming on Google Colab (
 - [x] Locked Tailscale DERP relay mode eliminating 5000ms saw-tooth UDP ping spikes
 - [x] Low-latency NVENC P1 CBR streaming tuned for 6–8 Mbps with zero relay bufferbloat
 - [x] Low-latency PulseAudio audio subsystem (2ms fragment buffer, UID 1001 user isolation)
-- [x] Dynamic Cloudflare tunnel origin extraction to prevent Sunshine CSRF 403 errors
+- [x] Public HTTPS access via Tailscale Funnel (no Cloudflare, friends need no client app)
 - [x] Native ultra-low-latency X11 XTest mouse and keyboard input (0ms driverless input pipeline)
 - [x] Asynchronous multi-threaded parallel deployment engine (50%+ faster bootstrap)
-- [x] Interactive live CLI console (`/pair`, `/status`, `/restart`, `/links`, `/pulse`, `/accel`, `/unfreeze`)
+- [x] Official MoonlightWeb web client (`moonlightweb.top`) with one-time Access PIN login per device
+- [x] Interactive live CLI console (`/pin`, `/pair`, `/status`, `/restart`, `/links`, `/pulse`, `/accel`, `/unfreeze`)
 - [x] Headless PyTorch 12MB VRAM GPU keepalive pulse loop to prevent Colab idle timeouts
 - [x] One-click Windows automation launchers (`start.bat`, `pair.bat`, `push.bat`)
 
@@ -34,7 +35,7 @@ High-performance, ultra-low-latency game and desktop streaming on Google Colab (
    │                    │
    │                    ├── 1. Provisions / Attaches to Colab GPU session ('t4')
    │                    ├── 2. Executes setup_remote.py on the instance
-   │                    ├── 3. Extracts Cloudflare public URLs & Tailscale auth link
+   │                    ├── 3. Reads Tailscale Funnel URL + MoonlightWeb Access PIN
    │                    └── 4. Runs background PyTorch keepalive pulse (12MB VRAM / 120s)
    │
 [Google Colab Instance (Tesla T4 GPU, Ubuntu 24.04)]
@@ -53,8 +54,8 @@ High-performance, ultra-low-latency game and desktop streaming on Google Colab (
    │
    └── Network & Tunnels
          ├── Tailscale WireGuard (Locked to DERP relay for stable 80-110ms latency)
-         ├── Cloudflare Tunnels (Sunshine WebUI & noVNC Desktop)
-         └── Moonlight Web (:8090)
+         ├── Tailscale Funnel (public HTTPS -> MoonlightWeb :8090)
+         └── MoonlightWeb (:8090, official moonlightweb.top client)
 ```
 
 ### Technical Details
@@ -71,8 +72,12 @@ High-performance, ultra-low-latency game and desktop streaming on Google Colab (
 4. **Anti-Jitter DERP Relay Streaming**  
    Direct peer-to-peer UDP hole-punching between Google Cloud Symmetric NAT and mobile Carrier-Grade NAT (CGNAT) fails, causing 5-second connection flapping cycles. By forcing Tailscale into DERP relay mode (`TS_DEBUG_ALWAYS_USE_DERP=true`) and capping the encoder bitrate to 6–8 Mbps (`min_bitrate = 2000`, `max_bitrate = 8000`, `packet_size = 1200`), latency stays flat at ~80–110ms with zero packet loss or bufferbloat.
 
-5. **Dynamic CSRF Protection**  
-   Sunshine blocks requests from unrecognized HTTP origins. Because Cloudflare free tunnels assign a dynamic subdomain on every boot, `setup_remote.py` provisions the tunnel before Sunshine starts, extracts the assigned domain from logs, and injects it into `csrf_allowed_origins` in `sunshine.conf`.
+5. **Tailscale Funnel & MoonlightWeb Access PIN**  
+   Instead of a Cloudflare quick tunnel (which hands out a random subdomain on every boot and breaks Sunshine's
+   `csrf_allowed_origins`), the instance publishes MoonlightWeb through `tailscale funnel --bg --yes 8090`. The
+   funnel URL is stable for the node (`https://<node>.<tailnet>.ts.net`) and is injected into
+   `csrf_allowed_origins` in `sunshine.conf` before Sunshine starts. Remote browsers must enter a single-use
+   Access PIN (issued by `MoonlightWeb --new-pin`) once per device.
 
 6. **Automated Keepalive Pulse**  
    To prevent Google Colab from terminating the instance due to kernel inactivity, `runner.py` executes a minimal PyTorch tensor computation (~12MB VRAM) every 120 seconds.
@@ -84,9 +89,9 @@ High-performance, ultra-low-latency game and desktop streaming on Google Colab (
 | Component | Role | Details |
 | :--- | :--- | :--- |
 | **Sunshine** | Game Stream Server | Low-latency NVENC P1 CBR encoding with NvFBC VRAM capture |
-| **Moonlight** | Game Stream Client | Native client on mobile/PC, or web client via browser (`:8090`) |
+| **MoonlightWeb** | Web Stream Client | Official `moonlightweb.top` client served over Tailscale Funnel on `:8090` |
 | **Tailscale** | Low-Latency Mesh | DERP WireGuard relay mode for stable cross-NAT streaming |
-| **Cloudflare Tunnels** | Public Access | Secure HTTPS tunnels for Sunshine WebUI and noVNC desktop |
+| **Tailscale Funnel** | Public Access | Public HTTPS endpoint that publishes MoonlightWeb on port 8090 |
 | **Openbox** | Window Manager | Ultra-lightweight X11 WM (<5 MB RAM usage) |
 | **Google Chrome** | Web Browser | Hardware-accelerated Vulkan and WebGPU Dawn engine |
 | **Steam** | Game Platform | 32-bit native Linux client |
@@ -120,7 +125,7 @@ The script will interactively guide you:
 - **Desktop Environment**: Choose between `Full Windows 11 Fluent GUI` (Centered taskbar, Start Menu, Desktop shortcuts, NVIDIA wallpaper, rounded windows) or `Pure Game Mode` (headless ultra-lean Openbox for maximum FPS and 0ms latency).
 - Automatically allocate and configure the Colab GPU runtime (`t4`).
 - Deploy all drivers, Xorg, audio, Chrome, Steam, Sunshine, and desktop daemons.
-- Print live Cloudflare access URLs and Moonlight pairing codes in the terminal.
+- Print the live Tailscale Funnel URL, the MoonlightWeb Access PIN, and Moonlight pairing codes in the terminal.
 - Prompt whether to enable Tailscale for ultra-low latency streaming (Recommended: `Y`).
 - Start the automated keepalive pulse loop.
 
@@ -131,8 +136,11 @@ The script will interactively guide you:
 2. When prompted by `start.bat`, authorize the Colab node if needed.
 3. Open Moonlight on your client device and enter the Colab Tailscale IP (printed in the terminal, e.g. `100.x.y.z`).
 
-#### Option B: Browser-Based Streaming (Moonlight Web)
-- Open the **Moonlight Web Stream** Cloudflare URL printed by the launcher in any modern browser.
+#### Option B: Browser-Based Streaming (official MoonlightWeb)
+- Open the **Tailscale Funnel** URL printed by the launcher (or run `/funnel`) in any modern browser — no app and no account needed.
+- The page asks for a **one-time Access PIN**: type `/pin` in the launcher to read it, or `/pin new` to mint a fresh PIN for each new device.
+- The PIN is single-use: each browser/device consumes one PIN and stays authorized afterwards.
+- This is the official MoonlightWeb client from [moonlightweb.top](https://moonlightweb.top/) (`linckosz/moonlight-web`) on port 8090.
 
 ### 3. Pair Moonlight with Sunshine
 1. When you select the host in Moonlight, a 4-digit PIN is displayed.
@@ -146,7 +154,9 @@ The script will interactively guide you:
 ### 4. Interactive Live Terminal Commands
 While the background keep-alive pulse keeps your GPU warm, you can run commands directly in the launcher prompt:
 - `/pair <PIN>` : Pair a new Moonlight client device instantly (e.g. `/pair 1234`).
-- `/cflink`     : Display all active Cloudflare public tunnel URLs.
+- `/pin`        : Show the current MoonlightWeb one-time Access PIN for web login.
+- `/pin new`    : Mint a fresh single-use Access PIN for a new browser or device.
+- `/funnel`     : Publish MoonlightWeb publicly through Tailscale Funnel.
 - `/accel`      : Live GPU verification card (OpenGL 4.6, Vulkan 1.4, NVENC, NvFBC).
 - `/unfreeze`   : Release any stuck Shift/Ctrl/Alt keys and unfreeze X11 input queue.
 - `/links`      : Re-print the dashboard of active streaming & desktop URLs.
@@ -174,6 +184,8 @@ To ensure stutter-free streaming over the relay:
 - `pair.bat` / `pair.py`: One-click Moonlight pairing utility.
 - `check_ts.py`: Helper script to query remote Tailscale status and IP.
 - `sync_ts_ip.py`: Helper script to synchronize active Tailscale IP into Sunshine.
-- `read_links.py`: Helper script to extract tunnel URLs from remote logs.
+- `read_links.py`: Helper to read the Tailscale Funnel URL, node IP and MoonlightWeb PIN.
+- `mw_pin.py`: Generates / reads the MoonlightWeb one-time Access PIN (also starts the server if needed).
+- `start_ts_funnel.py`: Enables and reports the Tailscale Funnel endpoint.
 - `keepalive_code.py`: Headless PyTorch GPU keepalive snippet.
 - `push.bat`: One-click Git push script for repo maintenance.
