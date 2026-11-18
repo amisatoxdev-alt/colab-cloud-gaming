@@ -1,4 +1,4 @@
-﻿# Colab Cloud Gaming
+# Colab Cloud Gaming
 
 High-performance, ultra-low-latency game and desktop streaming on Google Colab (Tesla T4 GPU) using Sunshine, Moonlight, hardware Xorg with NvFBC capture, and Tailscale DERP networking.
 
@@ -8,13 +8,14 @@ High-performance, ultra-low-latency game and desktop streaming on Google Colab (
 
 - [x] Full Windows 11 Fluent Dark GUI (Centered Tint2 Taskbar, Rofi Start Menu, Desktop Icons, Rounded Windows, Papirus icons, B00merang Windows 11 theme)
 - [x] Interactive startup options: Tesla T4 Standard (Default) vs High-RAM & Pure Game Mode (Default) vs Windows 11 GUI
+- [x] Region-aware session allocation: Auto (Singapore-first) / US / EU / SG / Any with stop+retry loop (Colab has no region flag)
 - [x] 100% Pure native Xorg XTest driverless input pipeline (0ms input latency, freeze-immune mouse & keyboard)
 - [x] High-resolution NVIDIA GeForce gaming desktop wallpaper
 - [x] Hardware Xorg display server with direct NvFBC VRAM capture at 60 FPS
 - [x] Custom 128-byte VESA EDID unlocking native 1920x1080, 1366x768, and 1280x720 resolutions
 - [x] Hardware WebGPU and Vulkan acceleration in Google Chrome (Dawn engine)
 - [x] Locked Tailscale DERP relay mode eliminating 5000ms saw-tooth UDP ping spikes
-- [x] Low-latency NVENC P1 CBR streaming tuned for 6–8 Mbps with zero relay bufferbloat
+- [x] Low-latency NVENC P1 CBR streaming tuned for up to 50 Mbps with zero relay bufferbloat
 - [x] Low-latency PulseAudio audio subsystem (2ms fragment buffer, UID 1001 user isolation)
 - [x] Public HTTPS access via Tailscale Funnel (no Cloudflare, friends need no client app)
 - [x] Native ultra-low-latency X11 XTest mouse and keyboard input (0ms driverless input pipeline)
@@ -50,7 +51,7 @@ High-performance, ultra-low-latency game and desktop streaming on Google Colab (
    │     └── PulseAudio (sink-sunshine-stereo, 2ms buffer, non-root user)
    │
    ├── Video Capture & Encoding
-   │     └── Sunshine Server (NvFBC direct VRAM capture -> NVENC P1 CBR 6-8 Mbps)
+   │     └── Sunshine Server (NvFBC direct VRAM capture -> NVENC P1 CBR 2-50 Mbps)
    │
    └── Network & Tunnels
          ├── Tailscale WireGuard (Locked to DERP relay for stable 80-110ms latency)
@@ -70,7 +71,7 @@ High-performance, ultra-low-latency game and desktop streaming on Google Colab (
    Chromium's Linux driver blocklist normally forces software rendering on server GPUs. The Chrome launcher is patched with hardware flags (`--enable-features=Vulkan,DefaultANGLEVulkan,WebGPUService --enable-unsafe-webgpu --use-angle=vulkan`), enabling the Dawn WebGPU engine directly on Tesla T4 Vulkan 1.3 drivers.
 
 4. **Anti-Jitter DERP Relay Streaming**  
-   Direct peer-to-peer UDP hole-punching between Google Cloud Symmetric NAT and mobile Carrier-Grade NAT (CGNAT) fails, causing 5-second connection flapping cycles. By forcing Tailscale into DERP relay mode (`TS_DEBUG_ALWAYS_USE_DERP=true`) and capping the encoder bitrate to 6–8 Mbps (`min_bitrate = 2000`, `max_bitrate = 8000`, `packet_size = 1200`), latency stays flat at ~80–110ms with zero packet loss or bufferbloat.
+   Direct peer-to-peer UDP hole-punching between Google Cloud Symmetric NAT and mobile Carrier-Grade NAT (CGNAT) fails, causing 5-second connection flapping cycles. By forcing Tailscale into DERP relay mode (`TS_DEBUG_ALWAYS_USE_DERP=true`) and shaping the encoder (`min_bitrate = 2000`, `max_bitrate = 50000`, `packet_size = 1024`), latency stays flat at ~80–110ms. Keep the client bitrate at 20–50 Mbps over DERP and lower it only if you see packet loss.
 
 5. **Tailscale Funnel & MoonlightWeb Access PIN**  
    Instead of a Cloudflare quick tunnel (which hands out a random subdomain on every boot and breaks Sunshine's
@@ -164,6 +165,11 @@ While the background keep-alive pulse keeps your GPU warm, you can run commands 
 - `/status`     : Query real-time GPU telemetry, VRAM usage, and streaming sessions.
 - `/restart`    : Cleanly restart Sunshine & Openbox without resetting the Colab VM.
 - `/tailscale`  : Query Tailscale connection state and Colab node IP.
+- `/region`     : Show current datacenter region (zone parsed from the runtime id).
+- `/region sg`  : Stop the session and re-allocate until Singapore is assigned.
+- `/region us`  : Stop and re-allocate until a US zone is assigned.
+- `/region eu`  : Stop and re-allocate until an EU zone is assigned.
+- `/region any` : Accept whatever region Colab gives (no retry).
 - `/pulse`      : Manually trigger an immediate PyTorch VRAM pulse.
 - `/gtav`       : Install GTA V (Wine + DXVK + Steam shortcut) if not done at startup.
 - `/gtav add`   : Re-register the Steam non-Steam shortcut (run once after logging into Steam).
@@ -180,6 +186,7 @@ desktop is up. It runs these stages (usable individually with `GTA_STEP=`):
 | Stage | What it does |
 |-------|--------------|
 | `wine` | Installs Wine 9.0 + `wine32:i386` + Vulkan ICDs (`vulkan-tools`, mesa drivers) |
+| `verify` | Proves hardware acceleration: `nvidia-smi`, `xorg.conf` nvidia driver, `glxinfo` renderer, `vulkaninfo` device list (no lavapipe), a real `h264_nvenc` test encode, and Sunshine `NvFBC`+`nvenc` in its log |
 | `download` | Fetches the 13.7 GB repack from Google Drive, resumable, size-verified |
 | `extract` | `7z x` to `/content/games/GTAV` (~15 GB, 8–15 min, solid LZMA2) |
 | `stage` | Moves the game to `/content/SteamLibrary/steamapps/common/Grand Theft Auto V` and writes `libraryfolders.vdf` |
@@ -189,8 +196,10 @@ Run it standalone on the VM:
 
 ```bash
 python3 gta_setup.py                # full install
+GTA_STEP=verify python3 gta_setup.py     # prove T4 hardware acceleration
 GTA_STEP=add  python3 gta_setup.py  # only re-register in Steam
 GTA_STEP=download python3 gta_setup.py   # resume an interrupted download
+GTA_FILE_ID=<drive_id> python3 gta_setup.py   # use a different Drive copy
 GTA_KEEP_7Z=1 python3 gta_setup.py  # keep the archive
 ```
 
@@ -205,16 +214,33 @@ Then launch it from **Steam → Library → Grand Theft Auto V**, the desktop ic
 `Grand Theft Auto V` entry for streaming.
 
 > [!NOTE]
-> The T4 is a datacenter GPU with no display output; GTA V runs through Wine + DXVK
-> on the virtual Xorg display. Expect low FPS at high settings — drop resolution and
-> in-game quality for a playable stream.
+> **Rendering is genuinely hardware-accelerated on the T4.** The Xorg server is bound to
+> the NVIDIA driver (`BusID PCI:0:4:0`), `glxinfo` reports `Tesla T4/PCIe/SSE2` with
+> OpenGL 4.6, `vulkaninfo` lists only `Tesla T4` devices, and Sunshine captures via
+> `NvFBC` and encodes via `nvenc`. The launcher additionally pins the ICD and filters the
+> DXVK device (`VK_ICD_FILENAMES=nvidia_icd.json`, `DXVK_FILTER_DEVICE_NAME='Tesla T4'`,
+> `LIBGL_ALWAYS_SOFTWARE=0`) so lavapipe/llvmpipe can never be selected.
+> The only real limitation is that the T4 has **no display output** and Colab gives the
+> VM a modest CPU/RAM budget, so high in-game settings still drop FPS — lower resolution
+> and quality for a smooth stream. Verify any time with `GTA_STEP=verify python3 gta_setup.py`
+> or `/accel`.
+
+> [!WARNING]
+> **Google Drive quota.** The repack is fetched from a shared Drive file
+> (`GTA_FILE_ID`, default `1tifhdY5C7tqpLZ2C_PWYhHMOdq7vUcvT`). If that file has been
+> downloaded too often, Drive serves a ~2 KB `Quota exceeded` HTML page instead of the
+> 13.7 GB archive. The installer now detects this by checking the 7z magic bytes
+> (`37 7A BC AF 27 1C`) and by sizing with a ranged `Content-Range` probe, so it fails
+> loudly (`Download FAILED`) instead of trying to `7z x` an HTML page. If you hit it,
+> either wait ~24 h or make your own copy in Drive and pass its id:
+> `GTA_FILE_ID=<new_id> python3 gta_setup.py`.
 
 ### 5. Recommended Moonlight Client Settings
 To ensure stutter-free streaming over the relay:
 - **Resolution**: `1920x1080` or `1280x720` @ 60 FPS
-- **Bitrate**: `6.0 Mbps` to `8.0 Mbps` (avoids relay bufferbloat)
+- **Bitrate**: `20 Mbps` to `50 Mbps` (matches Sunshine's `max_bitrate = 50000`; lower it if the DERP relay shows packet loss)
 - **Frame Pacing**: Prefer lowest latency
-- **Video Codec**: H.264 or HEVC (H.265)
+- **Video Codec**: `HEVC` (H.265) — falls back to `H.264` automatically
 
 ---
 

@@ -111,6 +111,31 @@ with open('/usr/share/glvnd/egl_vendor.d/10_nvidia.json', 'w') as f:
         "ICD": {"library_path": "libEGL_nvidia.so.0"}
     }, f, indent=2)
 
+# --- Purge every non-NVIDIA Vulkan ICD -------------------------------------
+# `mesa-vulkan-drivers` ships lvp_icd.json (lavapipe = CPU/software Vulkan).
+# Vulkan enumerates ALL ICDs in this directory, so lavapipe shows up alongside
+# the T4 and can win device selection inside DXVK/Wine. Keep nvidia only.
+_icd_dir = "/usr/share/vulkan/icd.d"
+_keep = {"nvidia_icd.json", "nvidia_icd.x86_64.json"}
+_purged = []
+if os.path.isdir(_icd_dir):
+    for _f in sorted(os.listdir(_icd_dir)):
+        if _f in _keep or "nvidia" in _f.lower():
+            continue
+        try:
+            os.remove(os.path.join(_icd_dir, _f))
+            _purged.append(_f)
+        except OSError:
+            pass
+log(f"Vulkan ICDs: kept NVIDIA, purged {_purged or 'nothing'}")
+
+# Pin the ICD for every process (login shells, Sunshine, Steam, Wine)
+os.makedirs("/etc/environment.d", exist_ok=True)
+with open("/etc/environment.d/99-nvidia-vulkan.conf", "w") as f:
+    f.write("VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json\n")
+    f.write("VK_DRIVER_FILES=/usr/share/vulkan/icd.d/nvidia_icd.json\n")
+    f.write("LIBGL_ALWAYS_SOFTWARE=0\n")
+
 # Install Tesla userspace compatibility library
 r_ver = subprocess.run("nvidia-smi --query-gpu=driver_version --format=csv,noheader", shell=True, text=True, capture_output=True)
 driver_ver = r_ver.stdout.strip()
@@ -764,18 +789,26 @@ web_port = 47990
 external_ip = {ts_ip}
 
 min_bitrate = 2000
-max_bitrate = 8000
+max_bitrate = 50000
 fec_percentage = 20
-packet_size = 1200
+packet_size = 1024
 
+# --- Tesla T4 hardware capture + encode (never software) ---
+encoder = nvenc
+capture = nvfbc
 nvenc_preset = 1
-nvenc_twopass = 0
-nvenc_spatial_aq = 0
+nvenc_twopass = quarter_res
+nvenc_spatial_aq = enabled
 nvenc_vbv_increase = 0
-nvenc_realtime_hags = 0
+nvenc_realtime_hags = enabled
+nvenc_latency_over_power = enabled
 
-audio_sink = sink-sunshine-stereo
+hevc_mode = 3
+av1_mode = 0
+
+# --- Low-latency streaming for Moonlight / MoonlightWeb ---
 channels = 2
+audio_sink = sink-sunshine-stereo
 """
 with open("/root/.config/sunshine/sunshine.conf", "w") as f:
     f.write(sunshine_cfg)

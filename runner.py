@@ -41,6 +41,90 @@ KEEP_ALIVE_INTERVAL = 120
 stop_event = threading.Event()
 latest_links = {}
 
+# -------------------------------------------------------------
+# Region targeting
+# -------------------------------------------------------------
+# `colab new` has NO region/zone flag. The region is assigned by Google and is
+# only visible in the runtime id, e.g.  gpu-t4-s-use1c0-20wkgj02nzmwr
+#                                              ^^^^^  = us-east1
+# The only way to change region is to STOP the session and allocate again, so
+# we reallocate in a loop until the requested region family shows up.
+REGION_FAMILIES = {
+    # family token -> (region key, friendly zone)
+    "use1":  ("us", "us-east1"),
+    "use2":  ("us", "us-east2"),
+    "use4":  ("us", "us-east4"),
+    "usc1":  ("us", "us-central1"),
+    "usw1":  ("us", "us-west1"),
+    "usw2":  ("us", "us-west2"),
+    "usw4":  ("us", "us-west4"),
+    "euw1":  ("eu", "europe-west1"),
+    "euw2":  ("eu", "europe-west2"),
+    "euw3":  ("eu", "europe-west3"),
+    "euw4":  ("eu", "europe-west4"),
+    "euw12": ("eu", "europe-west12"),
+    "euc1":  ("eu", "europe-central2"),
+    "asse1": ("sg", "asia-southeast1"),
+    "asse2": ("sg", "asia-southeast2"),
+    "apse1": ("sg", "asia-southeast1"),
+    "apse2": ("sg", "asia-southeast2"),
+}
+
+REGION_LABELS = {
+    "auto": "Auto — prefer Singapore, fall back to any",
+    "us":   "United States (us-east / us-west / us-central)",
+    "sg":   "Singapore (asia-southeast1)",
+    "eu":   "Europe (europe-west)",
+    "any":  "Any region (fastest allocation)",
+}
+
+REGION_MAX_ATTEMPTS = 8
+REGION_PREFERENCE = "auto"
+
+
+def parse_session_id(text, session=SESSION_NAME):
+    """Extract the runtime id for `session` from `colab sessions` output."""
+    m = re.search(rf"\[{re.escape(session)}\]\s+(\S+)", text or "")
+    return m.group(1) if m else None
+
+
+def region_of(runtime_id):
+    """Map a runtime id to (region_key, zone) or (None, None) if unknown."""
+    if not runtime_id:
+        return None, None
+    parts = runtime_id.split("-")
+    for tok in parts:
+        m = re.match(r"([a-z]+\d+)", tok)
+        if not m:
+            continue
+        fam = m.group(1)
+        if fam in REGION_FAMILIES:
+            return REGION_FAMILIES[fam]
+    return None, None
+
+
+def current_session_region():
+    """Live (region_key, zone, runtime_id) for the active session."""
+    res = run_cmd("colab sessions", capture=True)
+    rid = parse_session_id(res.stdout or "")
+    rk, zone = region_of(rid)
+    return rk, zone, rid
+
+
+def stop_session():
+    """Stop the named session; return True when it is gone."""
+    res = run_cmd(f"colab stop -s {SESSION_NAME}", capture=True)
+    out = (res.stdout or "") + (res.stderr or "")
+    if res.returncode == 0:
+        log_ok(f"Stopped session '{SESSION_NAME}'.")
+        return True
+    if "not found" in out.lower() or "no such" in out.lower():
+        log_ok(f"No active session '{SESSION_NAME}' to stop.")
+        return True
+    log_warn(f"Could not stop session cleanly: {out.strip()[:160]}")
+    return False
+
+
 def banner():
     art = f"""{C_CYAN}{C_BOLD}
   ██████╗ ██████╗ ██╗      █████╗ ██████╗      ██████╗ ██╗      ██████╗ ██╗   ██╗██████╗ 
@@ -80,7 +164,7 @@ def ask_startup_options():
     print(f"{C_CYAN}╰─────────────────────────────────────────────────────────────────────────────╯{C_RESET}")
 
     # 1. Hardware Shape Selection
-    print(f"\n{C_CYAN}[1/2] Select Hardware Memory Profile:{C_RESET}")
+    print(f"\n{C_CYAN}[1/4] Select Hardware Memory Profile:{C_RESET}")
     print(f"  {C_GREEN}1{C_RESET}) {C_BOLD}Tesla T4 Standard{C_RESET} (~12GB RAM)   {C_GREEN}[Default • Free Tier / Standard Accounts]{C_RESET}")
     print(f"  {C_GREEN}2{C_RESET}) {C_BOLD}Tesla T4 High-RAM{C_RESET} (~54GB RAM)   {C_MAGENTA}[Requires Colab Pro/Compute Units]{C_RESET}")
     try:
@@ -92,8 +176,32 @@ def ask_startup_options():
     hw_label = "Tesla T4 High-RAM (~54GB RAM)" if use_highmem else "Tesla T4 Standard (~12GB RAM)"
     log_ok(f"Selected Hardware: {C_BOLD}{hw_label}{C_RESET}")
 
-    # 2. Desktop Mode Selection
-    print(f"\n{C_CYAN}[2/3] Select Desktop Environment GUI:{C_RESET}")
+    # 2. Region Selection
+    # Colab CLI has NO region flag — region comes from whichever zone Google
+    # assigns. So we can only express a preference and stop+retry until it fits.
+    print(f"\n{C_CYAN}[2/4] Select Preferred Datacenter Region:{C_RESET}")
+    print(f"  {C_GREEN}1{C_RESET}) {C_BOLD}Auto{C_RESET} — Singapore first, fall back to any  {C_GREEN}[Default • Best latency effort]{C_RESET}")
+    print(f"  {C_GREEN}2{C_RESET}) {C_BOLD}Singapore{C_RESET}  asia-southeast1                 {C_CYAN}[Lowest ping from South Asia]{C_RESET}")
+    print(f"  {C_GREEN}3{C_RESET}) {C_BOLD}United States{C_RESET}  us-east / us-west         {C_CYAN}[Most T4 capacity]{C_RESET}")
+    print(f"  {C_GREEN}4{C_RESET}) {C_BOLD}Europe{C_RESET}  europe-west                      {C_CYAN}[EU latency]{C_RESET}")
+    print(f"  {C_GREEN}5{C_RESET}) {C_BOLD}Any region{C_RESET}  no retries, take first available {C_GREEN}[Fastest startup]{C_RESET}")
+    try:
+        reg_choice = input(f"      {C_YELLOW}Select region [1-5, default: 1]: {C_RESET}").strip()
+    except Exception:
+        reg_choice = "1"
+
+    global REGION_PREFERENCE
+    REGION_PREFERENCE = {
+        "1": "auto", "2": "sg", "3": "us", "4": "eu", "5": "any",
+    }.get(reg_choice, "auto")
+    log_ok(f"Selected Region: {C_BOLD}{REGION_LABELS[REGION_PREFERENCE]}{C_RESET}")
+    if REGION_PREFERENCE not in ("any",):
+        print(f"      {C_GRAY}Note: Colab exposes no region flag. Regions are assigned per "
+              f"allocation, so a mismatch means stop + re-allocate "
+              f"(up to {REGION_MAX_ATTEMPTS} tries).{C_RESET}", flush=True)
+
+    # 3. Desktop Mode Selection
+    print(f"\n{C_CYAN}[3/4] Select Desktop Environment GUI:{C_RESET}")
     print(f"  {C_GREEN}1{C_RESET}) {C_BOLD}Pure Game Mode (No Desktop){C_RESET}    {C_GREEN}[Default • Maximum FPS, Ultra-Lean Openbox, Zero Overhead]{C_RESET}")
     print(f"  {C_GREEN}2{C_RESET}) {C_BOLD}Full Windows 11 Fluent GUI{C_RESET}     {C_CYAN}[Centered Taskbar, Start Menu, Desktop Icons, NVIDIA Wallpaper]{C_RESET}")
     try:
@@ -105,8 +213,8 @@ def ask_startup_options():
     mode_label = "Full Windows 11 Fluent GUI" if desktop_mode == "win11" else "Pure Game Mode (No Desktop)"
     log_ok(f"Selected Interface: {C_BOLD}{mode_label}{C_RESET}")
 
-    # 3. Optional GTA V install
-    print(f"\n{C_CYAN}[3/3] Install a game with Steam integration:{C_RESET}")
+    # 4. Optional GTA V install
+    print(f"\n{C_CYAN}[4/4] Install a game with Steam integration:{C_RESET}")
     print(f"  {C_GREEN}1{C_RESET}) {C_BOLD}Skip for now{C_RESET}                  {C_GREEN}[Default • Desktop only]{C_RESET}")
     print(f"  {C_GREEN}2{C_RESET}) {C_BOLD}Grand Theft Auto V (GTA V RIP){C_RESET} {C_MAGENTA}[Wine 9 + DXVK + Steam shortcut, ~30 GB]{C_RESET}")
     try:
@@ -137,23 +245,120 @@ def install_gta_v():
 def ensure_session(use_highmem=False):
     log_step("1/3", f"Checking Google Colab GPU session '{SESSION_NAME}'...")
     res = run_cmd("colab sessions", capture=True)
-    if SESSION_NAME not in res.stdout:
-        if use_highmem:
-            print(f"      {C_GRAY}Session not found. Allocating High-RAM Tesla T4 runtime (--high-mem)...{C_RESET}", flush=True)
-            res_new = run_cmd(f"colab new -s {SESSION_NAME} --gpu t4 --high-mem")
-            if res_new.returncode != 0:
-                print(f"      {C_YELLOW}High-RAM allocation returned non-zero. Attempting standard T4 shape...{C_RESET}", flush=True)
-                res_new = run_cmd(f"colab new -s {SESSION_NAME} --gpu t4")
-        else:
-            print(f"      {C_GRAY}Session not found. Allocating Standard Tesla T4 runtime...{C_RESET}", flush=True)
-            res_new = run_cmd(f"colab new -s {SESSION_NAME} --gpu t4")
-        if res_new.returncode != 0:
+    if SESSION_NAME not in (res.stdout or ""):
+        alloc = allocate_session(use_highmem)
+        if not alloc:
             log_err("Failed to allocate Colab GPU session. Please check your network, auth, or quota.")
             sys.exit(1)
-        shape_info = "High-RAM (~54GB)" if use_highmem else "Standard (~12GB)"
-        log_ok(f"Session '{SESSION_NAME}' is READY and active ({shape_info}).")
     else:
-        log_ok(f"Session '{SESSION_NAME}' is currently active.")
+        rk, zone, rid = current_session_region()
+        log_ok(f"Session '{SESSION_NAME}' is currently active"
+               f"{f' in {zone}' if zone else ''}.")
+        if not region_ok(rk):
+            log_warn(f"Active session is in {zone or 'an unknown region'}, "
+                     f"which does not match your preference ({REGION_PREFERENCE}).")
+            print(f"      {C_GRAY}Colab has no region flag — the only way to change it is to "
+                  f"stop and re-allocate.{C_RESET}", flush=True)
+            try:
+                ans = input(f"      {C_YELLOW}Reallocate now for a different region? [y/N]: {C_RESET}").strip().lower()
+            except Exception:
+                ans = "n"
+            if ans == "y":
+                if stop_session():
+                    alloc = allocate_session(use_highmem)
+                    if not alloc:
+                        log_err("Re-allocation failed after stopping the old session.")
+                        sys.exit(1)
+
+
+def region_ok(region_key):
+    """True when the live region satisfies REGION_PREFERENCE."""
+    if REGION_PREFERENCE in ("any", "auto") or region_key is None:
+        return True
+    return region_key == REGION_PREFERENCE
+
+
+def allocate_session(use_highmem=False):
+    """
+    Allocate the T4 session, retrying with stop+new until the requested region
+    family is assigned. `colab new` exposes no region flag, so region is purely
+    a matter of luck per allocation — hence the retry loop.
+    """
+    want = REGION_PREFERENCE
+    max_attempts = 1 if want == "any" else REGION_MAX_ATTEMPTS
+
+    if want not in ("any", "auto"):
+        log_warn(f"No region flag exists in the Colab CLI. Will stop + re-allocate "
+                 f"up to {max_attempts}x until '{want}' matches "
+                 f"({REGION_LABELS.get(want, want)}).")
+    elif want == "auto":
+        log_ok(f"Auto region mode: preferring Singapore, will accept any "
+               f"({max_attempts} attempts).")
+
+    best = None  # (zone, region_key) of a session we kept but didn't prefer
+    for attempt in range(1, max_attempts + 1):
+        if attempt > 1:
+            stop_session()
+            time.sleep(3)
+
+        if use_highmem:
+            print(f"      {C_GRAY}[{attempt}/{max_attempts}] Allocating High-RAM Tesla T4 "
+                  f"runtime (--high-mem)...{C_RESET}", flush=True)
+            r = run_cmd(f"colab new -s {SESSION_NAME} --gpu t4 --high-mem", capture=True)
+            if r.returncode != 0:
+                print(f"      {C_YELLOW}High-RAM allocation failed. Trying standard "
+                      f"T4 shape...{C_RESET}", flush=True)
+                r = run_cmd(f"colab new -s {SESSION_NAME} --gpu t4", capture=True)
+        else:
+            print(f"      {C_GRAY}[{attempt}/{max_attempts}] Allocating Standard Tesla T4 "
+                  f"runtime...{C_RESET}", flush=True)
+            r = run_cmd(f"colab new -s {SESSION_NAME} --gpu t4", capture=True)
+
+        if r.returncode != 0:
+            log_warn(f"Allocation attempt {attempt} failed: "
+                     f"{((r.stderr or r.stdout) or '').strip()[:160]}")
+            time.sleep(5)
+            continue
+
+        rk, zone, rid = current_session_region()
+        log_ok(f"Allocated: {zone or 'unknown region'}  ({rid or 'id?'})")
+
+        if want == "any" or region_ok(rk):
+            shape_info = "High-RAM (~54GB)" if use_highmem else "Standard (~12GB)"
+            log_ok(f"Session '{SESSION_NAME}' is READY and active ({shape_info})"
+                   f"{f' in {zone}' if zone else ''}.")
+            return True
+
+        if want == "auto" and rk == "sg":
+            shape_info = "High-RAM (~54GB)" if use_highmem else "Standard (~12GB)"
+            log_ok(f"Session '{SESSION_NAME}' is READY in Singapore ({shape_info}).")
+            return True
+
+        if best is None:
+            best = (zone, rk)
+        log_warn(f"{zone or 'unknown region'} is not preferred "
+                 f"(wanted '{want}') — retrying...")
+
+    if want == "auto" and best:
+        # Keep the last working session rather than leaving the user with none.
+        log_warn(f"No Singapore allocation after {max_attempts} attempts. "
+                 f"Falling back to {best[0] or 'last allocation'}.")
+        rk, zone, rid = current_session_region()
+        if rid:
+            shape_info = "High-RAM (~54GB)" if use_highmem else "Standard (~12GB)"
+            log_ok(f"Session '{SESSION_NAME}' is READY ({shape_info}) in "
+                   f"{zone or 'unknown region'}.")
+            return True
+        # session vanished; one last plain allocation
+        r = run_cmd(f"colab new -s {SESSION_NAME} --gpu t4", capture=True)
+        return r.returncode == 0
+
+    if want not in ("any", "auto"):
+        log_err(f"Could not obtain a session in '{want}' after {max_attempts} attempts.")
+        print(f"      {C_GRAY}Colab assigns regions by availability; {want} may be full. "
+              f"Run again later, or choose 'any'.{C_RESET}", flush=True)
+    return False
+
 
 def setup_environment(desktop_mode="minimal"):
     mode_desc = "Windows 11 Fluent GUI" if desktop_mode == "win11" else "Pure Game Mode"
@@ -613,8 +818,14 @@ def show_help():
 │  {C_GREEN}/gtav add{C_CYAN}         : {C_WHITE}Re-register the Steam shortcut (run after login)    │
 │  {C_GREEN}/gtav play{C_CYAN}        : {C_WHITE}Launch GTA V on the desktop right now               │
 │  {C_GREEN}/gtav log{C_CYAN}         : {C_WHITE}Tail the GTA V installer log                        │
+│  {C_GREEN}/gtav verify{C_CYAN}      : {C_WHITE}Prove T4 GPU + NVENC acceleration (no lavapipe)     │
 │  {C_GREEN}/tailscale{C_CYAN}        : {C_WHITE}Query Tailscale mesh connection state and node IP    │
 │  {C_GREEN}/pulse{C_CYAN}            : {C_WHITE}Trigger an immediate 12MB VRAM PyTorch keep-alive    │
+│  {C_GREEN}/region{C_CYAN}           : {C_WHITE}Show current datacenter region / zone                 │
+│  {C_GREEN}/region sg{C_CYAN}        : {C_WHITE}Stop + re-allocate until Singapore assigned           │
+│  {C_GREEN}/region us{C_CYAN}        : {C_WHITE}Stop + re-allocate until US assigned                  │
+│  {C_GREEN}/region eu{C_CYAN}        : {C_WHITE}Stop + re-allocate until EU assigned                  │
+│  {C_GREEN}/region any{C_CYAN}       : {C_WHITE}Take whatever region Colab assigns                    │
 │  {C_GREEN}/help{C_CYAN}             : {C_WHITE}Show this list of commands                           │
 │  {C_GREEN}/exit{C_CYAN}             : {C_WHITE}Stop keep-alive and exit launcher                    │
 ╰─────────────────────────────────────────────────────────────────────────────╯{C_RESET}
@@ -643,7 +854,7 @@ def keep_alive_worker():
 # 5. Main Interactive Shell
 # -------------------------------------------------------------
 def main():
-    global latest_links
+    global latest_links, REGION_PREFERENCE
     banner()
     
     use_highmem, desktop_mode, install_gta = ask_startup_options()
@@ -744,8 +955,31 @@ def main():
                     run_cmd(f"colab exec -s {SESSION_NAME} \"DISPLAY=:1 nohup setsid bash /content/gta_launch.sh >/var/log/services/gta_run.log 2>&1 & sleep 2; echo launched\"")
                 elif arg.lower() in ("status", "st"):
                     run_cmd(f"colab exec -s {SESSION_NAME} -f gta_status.py")
+                elif arg.lower() in ("verify", "gpu", "accel"):
+                    run_cmd(f"colab exec -s {SESSION_NAME} --env GTA_STEP=verify -f gta_setup.py")
                 else:
                     install_gta_v()
+            elif cmd in ["/region", "region", "/zone", "zone"]:
+                rk, zone, rid = current_session_region()
+                if not rid:
+                    log_warn(f"No active session '{SESSION_NAME}'.")
+                else:
+                    print(f"      {C_WHITE}Session   : {C_CYAN}{rid}{C_RESET}")
+                    print(f"      {C_WHITE}Zone      : {C_CYAN}{zone or 'unknown'}{C_RESET}")
+                    print(f"      {C_WHITE}Family    : {C_CYAN}{rk or 'unknown'}{C_RESET}")
+                    print(f"      {C_WHITE}Preference: {C_CYAN}{REGION_LABELS.get(REGION_PREFERENCE, REGION_PREFERENCE)}{C_RESET}")
+                    if not region_ok(rk):
+                        log_warn("Current zone does not match your preference. "
+                                 "Run /region sg (or us/eu) to stop and re-allocate.")
+                if arg.lower() in ("sg", "us", "eu", "any", "auto"):
+                    REGION_PREFERENCE = arg.lower()
+                    log_ok(f"Region preference set to {REGION_LABELS[REGION_PREFERENCE]}")
+                    print(f"      {C_GRAY}Stopping session and re-allocating...{C_RESET}", flush=True)
+                    if stop_session() and allocate_session(False):
+                        log_warn("New runtime allocated — the desktop stack is NOT deployed yet. "
+                                 "Re-run start.bat to provision it.")
+                elif arg:
+                    log_warn("Usage: /region [sg|us|eu|any]  (or /region with no args to show the zone)")
             elif cmd in ["/help", "help", "/?"]:
                 show_help()
             elif cmd in ["/exit", "exit", "/quit", "quit", "q"]:

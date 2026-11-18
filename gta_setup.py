@@ -16,17 +16,19 @@ What it does
 
 Usage (on the Colab VM, as root):
     python3 gta_setup.py                # full install
-    GTA_STEP=wine  python3 gta_setup.py # only one step
+    GTA_STEP=verify python3 gta_setup.py  # just prove the T4 is being used
+    GTA_STEP=download python3 gta_setup.py  # resume an interrupted download
     GTA_STEP=add   python3 gta_setup.py # only re-register in Steam
 
 Env knobs:
     GTA_FILE_ID   Google Drive file id (defaults to the known repack)
-    GTA_STEP      wine|download|extract|stage|add|all   (default all)
+    GTA_STEP      wine|verify|download|extract|stage|add|all   (default all)
     GTA_KEEP_7Z   "1" to keep the .7z after extraction (default: delete)
 """
 
 import glob
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -116,53 +118,112 @@ def install_wine():
 # --------------------------------------------------------------------------
 # 2. Download from Google Drive
 # --------------------------------------------------------------------------
-def drive_total_size():
-    """Ask Drive how big the file is (and its real filename)."""
+SEVEN_Z_MAGIC = b"7z\xbc\xaf\x27\x1c"
+
+
+def parse_content_range(text):
+    """'bytes 0-0/14724397872' -> (0, 14724397872). Also returns start."""
+    m = re.search(r"bytes\s+(\d+)-(\d+)/(\d+|\*)", text or "")
+    if not m:
+        return None, 0
+    start = int(m.group(1))
+    total = int(m.group(3)) if m.group(3) != "*" else 0
+    return start, total
+
+
+def drive_probe():
+    """
+    Determine the real size + filename.
+
+    NOTE: a HEAD request to drive.usercontent returns 'content-length: 0',
+    which previously made us think the download was already complete and
+    accept a 2 KB HTML error page as the archive. We therefore use a
+    one-byte ranged GET and read Content-Range instead.
+    """
     r = sh(
-        f"curl -sIL '{DRIVE_URL}' | tr -d '\\r' | "
-        "grep -iE '^(content-length|content-disposition):' | tail -4"
+        f"curl -sL --max-time 30 -r 0-0 -D - -o /dev/null '{DRIVE_URL}' "
+        "| tr -d '\\r'"
     )
-    total, name = 0, "GTA_V_RIP.7z"
+    total, name = 0, ""
     for line in r.stdout.splitlines():
         low = line.lower()
-        if low.startswith("content-length:"):
-            try:
-                total = int(line.split(":", 1)[1].strip())
-            except ValueError:
-                pass
-        elif low.startswith("content-disposition:"):
-            if "filename=" in line:
-                name = line.split("filename=")[-1].strip().strip('"')
+        if low.startswith("content-range:"):
+            _, total = parse_content_range(line)
+        elif low.startswith("content-disposition:") and "filename=" in line:
+            name = line.split("filename=")[-1].strip().strip('"')
     return total, name
+
+
+def is_real_archive(path):
+    """True only if the file starts with the 7z magic bytes."""
+    if not os.path.exists(path):
+        return False
+    with open(path, "rb") as f:
+        return f.read(6) == SEVEN_Z_MAGIC
+
+
+def looks_like_quota_page(path):
+    """Drive returns a 2 KB HTML page when the file's download quota is hit."""
+    if not os.path.exists(path) or os.path.getsize(path) > 200_000:
+        return False
+    try:
+        with open(path, "rb") as f:
+            head = f.read(2048).lower()
+    except OSError:
+        return False
+    return b"quota" in head or b"<html" in head or b"<!doctype" in head
 
 
 def download():
     os.makedirs(os.path.dirname(ARCHIVE), exist_ok=True)
-    total, real_name = drive_total_size()
-    log(f"Drive reports: {real_name} ({human(total) if total else 'size ?'})")
+
+    total, real_name = drive_probe()
+    if real_name:
+        log(f"Drive filename: {real_name}")
+    log(f"Drive size: {human(total) if total else 'unknown (will stream)'}")
+
+    # Throw away any poisoned 2 KB HTML "archive" left by a previous run.
+    if os.path.exists(ARCHIVE) and not is_real_archive(ARCHIVE):
+        n = os.path.getsize(ARCHIVE)
+        reason = "quota page" if looks_like_quota_page(ARCHIVE) else "not a 7z"
+        log(f"Removing invalid archive ({human(n)}, {reason}) from a prior run")
+        os.remove(ARCHIVE)
 
     for attempt in range(1, 6):
         have = os.path.getsize(ARCHIVE) if os.path.exists(ARCHIVE) else 0
         if total and have >= total:
-            log(f"Archive already complete ({human(have)})")
-            return True
+            break
         log(f"Download attempt {attempt} (have {human(have)})...")
-        # -C - resumes; if the server rejects range we restart cleanly
+
+        # Resume with -C - when we already hold a valid partial archive.
+        resume = " -C -" if have and is_real_archive(ARCHIVE) else ""
         r = sh(
-            f"curl -L --fail --retry 3 --retry-delay 2 -C - "
-            f"-o '{ARCHIVE}' '{DRIVE_URL}'",
+            f"curl -L --fail --retry 5 --retry-delay 3 --retry-all-errors "
+            f"--connect-timeout 30{resume} -o '{ARCHIVE}' '{DRIVE_URL}'",
             timeout=None,
         )
         have = os.path.getsize(ARCHIVE) if os.path.exists(ARCHIVE) else 0
-        log(f"After attempt {attempt}: {human(have)} rc={r.returncode}")
-        if total and have >= total:
+        log(f"  -> {human(have)} rc={r.returncode}")
+
+        if looks_like_quota_page(ARCHIVE):
+            os.remove(ARCHIVE)
+            log("Drive returned a 'Quota exceeded' page, not the file.")
+            log("That link has been downloaded too many times recently.")
+            log("Wait ~24h, or make a copy in your own Drive "
+                "(right-click -> Copy) and pass its id as GTA_FILE_ID.")
+            return False
+
+        if is_real_archive(ARCHIVE) and (not total or have >= total):
             break
-        if have == 0 and attempt == 1:
-            sh(f"rm -f '{ARCHIVE}'")
+
+        if have and not is_real_archive(ARCHIVE):
+            os.remove(ARCHIVE)
+
+        time.sleep(3)
 
     have = os.path.getsize(ARCHIVE) if os.path.exists(ARCHIVE) else 0
-    ok = bool(have) and (not total or have >= total)
-    log(f"Download {'OK' if ok else 'INCOMPLETE'}: {human(have)}"
+    ok = is_real_archive(ARCHIVE) and (not total or have >= total)
+    log(f"Download {'OK' if ok else 'FAILED'}: {human(have)}"
         f"{' / ' + human(total) if total else ''}")
     return ok
 
@@ -173,6 +234,14 @@ def download():
 def extract():
     if not os.path.exists(ARCHIVE):
         log("Archive missing - run the download step first")
+        return False
+    if not is_real_archive(ARCHIVE):
+        n = os.path.getsize(ARCHIVE)
+        log(f"Refusing to extract: {ARCHIVE} is not a 7z archive "
+            f"({human(n)})")
+        if looks_like_quota_page(ARCHIVE):
+            log("It is a Google Drive 'Quota exceeded' HTML page.")
+        os.remove(ARCHIVE)
         return False
     os.makedirs(STAGE_DIR, exist_ok=True)
     log(f"Extracting {human(os.path.getsize(ARCHIVE))} -> {STAGE_DIR}")
@@ -239,32 +308,186 @@ def prepare_runtime():
             sh(f"cp -f '{src}' '{GAME_DATA}/{dll}'")
             log(f"DXVK: {dll}")
 
+    # DXVK config tuned for a 16 GB datacenter card with no display output.
+    with open(f"{GAME_DATA}/dxvk.conf", "w") as f:
+        f.write(
+            "# DXVK config for Tesla T4 (no display output, 16 GB VRAM)\n"
+            "dxgi.maxFrameLatency = 1\n"
+            "dxgi.syncInterval = 0\n"
+            "d3d11.maxFrameLatency = 1\n"
+            "d3d11.cachedDynamicResources = a\n"
+            "d3d11.relaxedBarriers = Auto\n"
+            "dxvk.numCompilerThreads = 4\n"
+            "dxvk.enableGraphicsPipelineLibrary = Auto\n"
+            "dxvk.hud = \n"
+            "dxgi.deferSurfaceCreation = False\n"
+            "d3d11.allowMapFlagNoWait = True\n"
+            "dxvk.tearFree = False\n"
+        )
+    log("DXVK config: dxvk.conf (low latency, no vsync)")
+
     with open(LAUNCHER, "w") as f:
         f.write(
             "#!/bin/bash\n"
-            "# Grand Theft Auto V launcher (Wine + DXVK) for the Colab desktop\n"
+            "# Grand Theft Auto V launcher - Tesla T4 hardware accelerated\n"
             "set -u\n"
             'export DISPLAY="${DISPLAY:-:1}"\n'
             f'GAMEDIR="{GAME_DATA}"\n'
             f'export WINEPREFIX="${{WINEPREFIX:-{WINEPREFIX}}}"\n'
             "export WINEARCH=win64\n"
             "export WINEDEBUG=-all\n"
-            'export WINEDLLOVERRIDES="d3d11,dxgi=n,b"\n'
-            'export DXVK_HUD="${DXVK_HUD:-0}"\n'
+            # Force DXVK's own d3d11/dxgi regardless of what Wine ships.
+            'export WINEDLLOVERRIDES="d3d11,dxgi,d3d10core=n,b"\n'
+            # ---- Pin everything to the T4 and forbid all software fallbacks ----
+            "export __NV_PRIME_RENDER_OFFLOAD=1\n"
+            "export __GLX_VENDOR_LIBRARY_NAME=nvidia\n"
+            "export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json\n"
+            "export VK_DRIVER_FILES=/usr/share/vulkan/icd.d/nvidia_icd.json\n"
+            "export DXVK_FILTER_DEVICE_NAME='Tesla T4'\n"
+            "export DXVK_HUD=\"${DXVK_HUD:-0}\"\n"
+            "export DXVK_STATE_CACHE=1\n"
+            "export DXVK_STATE_CACHE_PATH=/content/dxvk-cache\n"
+            "export MESA_LOADER_DRIVER_OVERRIDE=\n"
+            "export LIBGL_ALWAYS_SOFTWARE=0\n"
+            "export vblank_mode=0\n"
+            "export __GL_SHADER_DISK_CACHE=1\n"
+            "export __GL_SHADER_DISK_CACHE_PATH=/content/nv-shader-cache\n"
+            "export __GL_THREADED_OPTIMIZATIONS=1\n"
+            "export PULSE_LATENCY_MSEC=60\n"
+            "mkdir -p /content/dxvk-cache /content/nv-shader-cache\n"
             'cd "$GAMEDIR" || exit 1\n'
             'if [ ! -d "$WINEPREFIX/drive_c/windows/system32" ]; then\n'
             '  echo "Initialising Wine prefix..."\n'
             "  wineboot -u >/dev/null 2>&1\n"
             "fi\n"
+            'echo "GPU: $(DISPLAY=$DISPLAY glxinfo -B 2>/dev/null | '
+            'grep -m1 "OpenGL renderer" | cut -d: -f2)"\n'
             'echo "Starting Grand Theft Auto V..."\n'
-            'exec wine "PlayGTAV.exe" "$@"\n'
+            # -ignoreDifferentVideoCard stops the game aborting when the
+            # detected adapter does not match the one in its settings blob.
+            'exec wine "PlayGTAV.exe" -ignoreDifferentVideoCard '
+            '-high -nomemrestrict -norestrictions "$@"\n'
         )
     os.chmod(LAUNCHER, 0o755)
     log(f"Launcher: {LAUNCHER}")
 
 
 # --------------------------------------------------------------------------
-# 6. Steam non-Steam shortcut (binary VDF)
+# 6. Hardware acceleration verification (T4 + NVENC)
+# --------------------------------------------------------------------------
+def verify_gpu():
+    """
+    Prove the whole chain is on the Tesla T4 and no software fallback is used:
+      Xorg -> OpenGL -> Vulkan -> NVENC -> Sunshine encoder
+    Returns True only if hardware rendering is confirmed.
+    """
+    log("Verifying hardware acceleration (Xorg / OpenGL / Vulkan / NVENC)...")
+    ok = True
+
+    # --- 1. Driver + Xorg ---------
+    drv = sh("nvidia-smi --query-gpu=name,driver_version "
+             "--format=csv,noheader").stdout.strip()
+    log(f"nvidia-smi: {drv or 'NOT PRESENT'}")
+
+    xconf = sh("grep -E 'Driver|BusID' /etc/X11/xorg.conf 2>/dev/null").stdout
+    if '"nvidia"' in xconf:
+        log("Xorg driver: nvidia (hw)")
+    else:
+        log("Xorg driver: NOT nvidia -> software fallback risk")
+        ok = False
+
+    # --- 2. OpenGL on the real GPU ---------
+    gl = sh("DISPLAY=:1 glxinfo -B 2>/dev/null").stdout
+    if "Tesla T4" in gl:
+        renderer = [l for l in gl.splitlines() if "renderer" in l.lower()]
+        log(f"OpenGL: {renderer[0].split(':', 1)[1].strip() if renderer else 'T4'}")
+    else:
+        log("OpenGL: Tesla T4 NOT reported -> software rendering")
+        ok = False
+
+    # --- 3. Vulkan must enumerate exactly the T4 -------------
+    # `mesa-vulkan-drivers` ships lvp_icd.json (lavapipe = CPU Vulkan). Vulkan
+    # enumerates every ICD in /usr/share/vulkan/icd.d, so lavapipe appears next
+    # to the T4 and can win device selection in DXVK/Wine. Purge it, then pin
+    # the NVIDIA ICD so no process can fall back to software.
+    icd_dir = "/usr/share/vulkan/icd.d"
+    nvidia_icd = f"{icd_dir}/nvidia_icd.json"
+    purged = []
+    if os.path.isdir(icd_dir):
+        for fn in sorted(os.listdir(icd_dir)):
+            if fn.startswith(("nvidia", "10_nvidia")) or "nvidia" in fn.lower():
+                continue
+            try:
+                os.remove(os.path.join(icd_dir, fn))
+                purged.append(fn)
+            except OSError:
+                pass
+    if purged:
+        log(f"Vulkan: purged software ICDs -> {', '.join(purged)}")
+
+    os.environ["VK_ICD_FILENAMES"] = nvidia_icd
+    os.environ["VK_DRIVER_FILES"] = nvidia_icd
+    os.environ["LIBGL_ALWAYS_SOFTWARE"] = "0"
+
+    freedesktop = "/usr/share/vulkan/implicit_layer.d"  # noqa: F841 (doc only)
+    os.makedirs("/etc/environment.d", exist_ok=True)
+    try:
+        with open("/etc/environment.d/99-nvidia-vulkan.conf", "w") as f:
+            f.write(f"VK_ICD_FILENAMES={nvidia_icd}\n")
+            f.write(f"VK_DRIVER_FILES={nvidia_icd}\n")
+            f.write("LIBGL_ALWAYS_SOFTWARE=0\n")
+    except OSError as exc:
+        log(f"Vulkan: could not persist env ({exc}) - session-only pin")
+
+    vk = sh(f"DISPLAY=:1 VK_ICD_FILENAMES={nvidia_icd} "
+            f"VK_DRIVER_FILES={nvidia_icd} vulkaninfo --summary 2>/dev/null").stdout
+    names = [l.split("=")[1].strip() for l in vk.splitlines()
+             if "deviceName" in l]
+    uniq = sorted(set(names))
+    log(f"Vulkan devices: {', '.join(uniq) if uniq else 'none'}")
+    if uniq and all("Tesla T4" in n for n in uniq):
+        log("Vulkan: T4 only (no lavapipe/llvmpipe fallback)")
+    elif not uniq:
+        log("Vulkan: no device enumerated -> check nvidia_icd.json")
+        ok = False
+    else:
+        bad = [n for n in uniq if "Tesla T4" not in n]
+        log(f"Vulkan: software device still present -> {', '.join(bad)}")
+        ok = False
+
+    # --- 4. NVENC encode actually works -------------
+    enc = subprocess.run(
+        "ffmpeg -hide_banner -loglevel error -f lavfi "
+        "-i testsrc=size=1280x720:rate=30:duration=2 "
+        "-c:v h264_nvenc -preset p1 -tune ll -b:v 6M -f null -",
+        shell=True, text=True, capture_output=True,
+    )
+    if enc.returncode == 0:
+        log("NVENC: h264_nvenc encodes successfully on the T4")
+    else:
+        log(f"NVENC: FAILED rc={enc.returncode} "
+            f"-> {(enc.stderr or '').strip()[:200]}")
+        ok = False
+
+    # --- 5. Sunshine is capturing + encoding in hardware -------------
+    slog = sh("grep -iE 'Screencasting with|Creating encoder' "
+              "/home/user/sunshine.log 2>/dev/null | tail -4").stdout
+    if "NvFBC" in slog:
+        log("Sunshine capture: NvFBC (VRAM, hardware)")
+    elif slog:
+        log(f"Sunshine capture: {slog.splitlines()[-1].strip()}")
+    if "nvenc" in slog.lower():
+        log("Sunshine encoder: NVENC (hardware)")
+    elif slog:
+        log("Sunshine encoder: not NVENC -> software encode")
+        ok = False
+
+    log(f"Hardware acceleration: {'CONFIRMED' if ok else 'PROBLEMS FOUND'}")
+    return ok
+
+
+# --------------------------------------------------------------------------
+# 7. Steam non-Steam shortcut (binary VDF)
 # --------------------------------------------------------------------------
 def _vdf_str(s):
     return b"\x01" + s.encode("utf-8") + b"\x00"
@@ -435,6 +658,9 @@ def main():
         if not install_wine():
             log("Wine install failed - continuing anyway")
 
+    if want("verify"):
+        verify_gpu()
+
     if want("download"):
         if not download():
             log("Download failed. Re-run with GTA_STEP=download (it resumes).")
@@ -455,6 +681,7 @@ def main():
         add_to_steam()
         add_sunshine_app()
         add_desktop_launcher()
+        verify_gpu()
 
     if KEEP_7Z is False and os.path.exists(ARCHIVE) and want("stage"):
         log(f"Removing archive to reclaim {human(os.path.getsize(ARCHIVE))}")
@@ -473,3 +700,4 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
