@@ -354,12 +354,17 @@ if not ts_ip or " " in ts_ip:
 # 5.6 Moonlight Web
 spawn_daemon(["/opt/moonlight-web/web-server", "run"], "moonlight_web.log", cwd="/opt/moonlight-web")
 
+# 5.6.5 ColabPad Virtual Xbox 360 Controller
+if os.path.exists("/usr/local/bin/colabpad.py"):
+    spawn_daemon(["python3", "/usr/local/bin/colabpad.py", "--port", "9876"], "colabpad.log")
+
 # 5.7 Cloudflare Tunnels
 log("Establishing Cloudflare Tunnels...")
 subprocess.run("rm -f /var/log/tunnels/*.log", shell=True)
 spawn_daemon(["cloudflared", "tunnel", "--url", "http://127.0.0.1:8090", "--logfile", "/var/log/tunnels/moonlight_cf.log"], "cf_moonlight.log")
 spawn_daemon(["cloudflared", "tunnel", "--url", "https://127.0.0.1:47990", "--http-host-header", "localhost", "--no-tls-verify", "--logfile", "/var/log/tunnels/sunshine_cf.log"], "cf_sunshine.log")
 spawn_daemon(["cloudflared", "tunnel", "--url", "http://127.0.0.1:6080", "--logfile", "/var/log/tunnels/desktop_cf.log"], "cf_desktop.log")
+spawn_daemon(["cloudflared", "tunnel", "--url", "http://127.0.0.1:9876", "--logfile", "/var/log/tunnels/gamepad_cf.log"], "cf_gamepad.log")
 
 def extract_cf_url(log_file, retries=15):
     for _ in range(retries):
@@ -374,6 +379,7 @@ def extract_cf_url(log_file, retries=15):
 moonlight_url = extract_cf_url("/var/log/tunnels/moonlight_cf.log")
 sunshine_url = extract_cf_url("/var/log/tunnels/sunshine_cf.log")
 desktop_url = extract_cf_url("/var/log/tunnels/desktop_cf.log")
+gamepad_url = extract_cf_url("/var/log/tunnels/gamepad_cf.log")
 
 # 5.8 Sunshine Configuration
 allowed_origins = [
@@ -460,6 +466,7 @@ links = {
     "sunshine_direct_tailscale": f"https://{ts_ip}:47990" if ts_ip != "127.0.0.1" else "Authorize Tailscale",
     "sunshine_creds": "admin / Sunshine123!",
     "desktop_url": desktop_url,
+    "gamepad_url": gamepad_url,
     "tailscale_ip": ts_ip if ts_ip != "127.0.0.1" else "",
     "tailscale_login_url": tailscale_url
 }

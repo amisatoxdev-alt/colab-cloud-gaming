@@ -7,6 +7,7 @@ links = {
     "moonlight_url": "Pending",
     "sunshine_url": "Pending",
     "desktop_url": "Pending",
+    "gamepad_url": "Pending",
     "sunshine_creds": "admin / Sunshine123!",
     "tailscale_ip": "",
     "sunshine_direct_tailscale": "Authorize Tailscale",
@@ -43,7 +44,8 @@ def extract_cf_url(log_path):
 cf_map = {
     "sunshine_url": "/var/log/tunnels/sunshine_cf.log",
     "moonlight_url": "/var/log/tunnels/moonlight_cf.log",
-    "desktop_url": "/var/log/tunnels/desktop_cf.log"
+    "desktop_url": "/var/log/tunnels/desktop_cf.log",
+    "gamepad_url": "/var/log/tunnels/gamepad_cf.log"
 }
 
 for key, log_file in cf_map.items():

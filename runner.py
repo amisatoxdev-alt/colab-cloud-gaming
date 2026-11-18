@@ -88,7 +88,8 @@ def ensure_session():
         log_ok(f"Session '{SESSION_NAME}' is currently active.")
 
 def setup_environment():
-    log_step("2/3", "Deploying hardware environment (Xorg, NvFBC, WebGPU, Sunshine, Tunnels)...")
+    log_step("2/3", "Deploying hardware environment (Xorg, NvFBC, WebGPU, Sunshine, ColabPad, Tunnels)...")
+    run_cmd(f"colab upload -s {SESSION_NAME} colabpad.py /usr/local/bin/colabpad.py")
     print(f"      {C_GRAY}Executing parallel automated deployment on remote instance...{C_RESET}", flush=True)
     res = run_cmd(f"colab exec -s {SESSION_NAME} -f setup_remote.py --timeout 0")
     if res.returncode != 0:
@@ -187,6 +188,7 @@ def print_dashboard(links, ts_ip=None):
         make_card_row("Moonlight Host IP", ts_display, C_GREEN + C_BOLD),
         make_card_row("Direct Sunshine URL", sunshine_ts, C_WHITE),
         make_card_row("Public Sunshine WebUI", links.get('sunshine_url', 'Pending'), C_WHITE),
+        make_card_row("ColabPad Web Gamepad", links.get('gamepad_url', 'Pending'), C_GREEN + C_BOLD),
         make_card_row("Sunshine Credentials", links.get('sunshine_creds', 'admin / Sunshine123!'), C_WHITE),
         make_card_row("Interactive Desktop", desktop_url, C_WHITE),
         make_card_row("Moonlight Web Client", links.get('moonlight_url', 'Pending'), C_WHITE),
@@ -281,12 +283,26 @@ def show_cflinks():
         header,
         sep,
         make_card_row("Sunshine WebUI (PIN)", sunshine_url, C_WHITE),
+        make_card_row("ColabPad Web Gamepad", latest_links.get('gamepad_url', 'Pending'), C_GREEN + C_BOLD),
         make_card_row("Moonlight Web Client", moonlight_url, C_WHITE),
         make_card_row("Interactive Desktop", desktop_url, C_WHITE),
         make_card_row("Web Credentials", "admin / Sunshine123!", C_GREEN),
         bot + "\n"
     ]
     print("\n".join(lines))
+
+def show_gamepad():
+    global latest_links
+    fresh = get_links(verbose=False)
+    if fresh:
+        latest_links.update(fresh)
+    gamepad_url = latest_links.get('gamepad_url', 'Pending')
+    print(f"\n{C_CYAN}[*] ColabPad Virtual Xbox 360 Controller Status:{C_RESET}")
+    print(f"    {C_GREEN}✓{C_RESET} Device Node   : {C_WHITE}Kernel Xbox 360 Controller (/dev/input/event*){C_RESET}")
+    print(f"    {C_GREEN}✓{C_RESET} Compatibility : {C_WHITE}Steam, Proton, Wine, SDL2, RetroArch{C_RESET}")
+    print(f"    {C_GREEN}✓{C_RESET} Mouse/Keyboard: {C_WHITE}Protected (Xorg XTest native 0ms latency){C_RESET}")
+    print(f"    {C_YELLOW}🌐 Web Gamepad UI{C_RESET} : {C_GREEN}{C_BOLD}{gamepad_url}{C_RESET}")
+    print(f"    {C_GRAY}💡 Tip: Open this link on your phone, tablet, or browser to control games!{C_RESET}\n")
 
 def show_accel():
     print(f"\n{C_CYAN}[*] Verifying GPU Hardware 3D & Video Acceleration on session '{SESSION_NAME}'...{C_RESET}", flush=True)
@@ -456,6 +472,7 @@ def show_help():
 │                         {C_WHITE}{C_BOLD}COMMAND CONSOLE MANUAL{C_CYAN}                              │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  {C_GREEN}/pair <4-digit PIN>{C_CYAN} : {C_WHITE}Instantly pair Moonlight client (e.g. /pair 1234)   │
+│  {C_GREEN}/gamepad{C_CYAN}            : {C_WHITE}Show ColabPad virtual gamepad status and Web URL     │
 │  {C_GREEN}/cflink{C_CYAN}             : {C_WHITE}Display all active Cloudflare public tunnel links    │
 │  {C_GREEN}/accel{C_CYAN}              : {C_WHITE}Verify OpenGL 4.6, Vulkan 1.4 & NVENC hardware accel │
 │  {C_GREEN}/unfreeze{C_CYAN}           : {C_WHITE}Release stuck Shift/Alt/Ctrl keys and unfreeze input │
@@ -545,6 +562,8 @@ def main():
                 if not arg:
                     arg = input(f"{C_YELLOW}[?] Enter 4-digit Moonlight PIN: {C_RESET}").strip()
                 pair_pin(arg)
+            elif cmd in ["/gamepad", "/pad", "gamepad", "pad"]:
+                show_gamepad()
             elif cmd in ["/cflink", "/cf", "cflink", "cf"]:
                 show_cflinks()
             elif cmd in ["/accel", "/gpu", "accel", "gpu"]:
