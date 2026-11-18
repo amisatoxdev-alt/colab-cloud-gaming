@@ -165,8 +165,49 @@ While the background keep-alive pulse keeps your GPU warm, you can run commands 
 - `/restart`    : Cleanly restart Sunshine & Openbox without resetting the Colab VM.
 - `/tailscale`  : Query Tailscale connection state and Colab node IP.
 - `/pulse`      : Manually trigger an immediate PyTorch VRAM pulse.
+- `/gtav`       : Install GTA V (Wine + DXVK + Steam shortcut) if not done at startup.
+- `/gtav add`   : Re-register the Steam non-Steam shortcut (run once after logging into Steam).
+- `/gtav play`  : Launch GTA V on the desktop immediately.
+- `/gtav log`   : Tail the GTA V installer log.
 - `/help`       : Display the command menu.
 - `/exit`       : Cleanly stop keepalive and exit.
+
+### 4b. Installing GTA V (optional)
+
+Startup menu option **3 → 2** installs Grand Theft Auto V automatically after the
+desktop is up. It runs these stages (usable individually with `GTA_STEP=`):
+
+| Stage | What it does |
+|-------|--------------|
+| `wine` | Installs Wine 9.0 + `wine32:i386` + Vulkan ICDs (`vulkan-tools`, mesa drivers) |
+| `download` | Fetches the 13.7 GB repack from Google Drive, resumable, size-verified |
+| `extract` | `7z x` to `/content/games/GTAV` (~15 GB, 8–15 min, solid LZMA2) |
+| `stage` | Moves the game to `/content/SteamLibrary/steamapps/common/Grand Theft Auto V` and writes `libraryfolders.vdf` |
+| `add` | Copies bundled DXVK next to `PlayGTAV.exe`, writes `gta_launch.sh`, registers the Steam shortcut, Sunshine app, and desktop launcher |
+
+Run it standalone on the VM:
+
+```bash
+python3 gta_setup.py                # full install
+GTA_STEP=add  python3 gta_setup.py  # only re-register in Steam
+GTA_STEP=download python3 gta_setup.py   # resume an interrupted download
+GTA_KEEP_7Z=1 python3 gta_setup.py  # keep the archive
+```
+
+> [!IMPORTANT]
+> Steam must be **logged in at least once** before the shortcut can be written
+> into `userdata/<id>/config/shortcuts.vdf`. If you install GTA V before logging
+> in, the shortcut is saved to `/content/steam_shortcut_pending/` — log into Steam,
+> then run `/gtav add` to apply it.
+
+Then launch it from **Steam → Library → Grand Theft Auto V**, the desktop icon, or
+`bash /content/gta_launch.sh`. The Sunshine app list also gets a
+`Grand Theft Auto V` entry for streaming.
+
+> [!NOTE]
+> The T4 is a datacenter GPU with no display output; GTA V runs through Wine + DXVK
+> on the virtual Xorg display. Expect low FPS at high settings — drop resolution and
+> in-game quality for a playable stream.
 
 ### 5. Recommended Moonlight Client Settings
 To ensure stutter-free streaming over the relay:
@@ -190,3 +231,5 @@ To ensure stutter-free streaming over the relay:
 - `start_ts_funnel.py`: Enables and reports the Tailscale Funnel endpoint.
 - `keepalive_code.py`: Headless PyTorch GPU keepalive snippet.
 - `push.bat`: One-click Git push script for repo maintenance.
+- `gta_setup.py`: One-shot GTA V installer — Wine 9 + DXVK, Google Drive download, 7z extract, Steam library staging, and non-Steam shortcut registration.
+- `gta_status.py`: Reports GTA V install state (archive, game dir, Wine, DXVK, Steam shortcut, running processes).

@@ -93,7 +93,7 @@ def ask_startup_options():
     log_ok(f"Selected Hardware: {C_BOLD}{hw_label}{C_RESET}")
 
     # 2. Desktop Mode Selection
-    print(f"\n{C_CYAN}[2/2] Select Desktop Environment GUI:{C_RESET}")
+    print(f"\n{C_CYAN}[2/3] Select Desktop Environment GUI:{C_RESET}")
     print(f"  {C_GREEN}1{C_RESET}) {C_BOLD}Pure Game Mode (No Desktop){C_RESET}    {C_GREEN}[Default • Maximum FPS, Ultra-Lean Openbox, Zero Overhead]{C_RESET}")
     print(f"  {C_GREEN}2{C_RESET}) {C_BOLD}Full Windows 11 Fluent GUI{C_RESET}     {C_CYAN}[Centered Taskbar, Start Menu, Desktop Icons, NVIDIA Wallpaper]{C_RESET}")
     try:
@@ -103,9 +103,36 @@ def ask_startup_options():
     
     desktop_mode = "win11" if gui_choice == "2" else "minimal"
     mode_label = "Full Windows 11 Fluent GUI" if desktop_mode == "win11" else "Pure Game Mode (No Desktop)"
-    log_ok(f"Selected Interface: {C_BOLD}{mode_label}{C_RESET}\n")
+    log_ok(f"Selected Interface: {C_BOLD}{mode_label}{C_RESET}")
 
-    return use_highmem, desktop_mode
+    # 3. Optional GTA V install
+    print(f"\n{C_CYAN}[3/3] Install a game with Steam integration:{C_RESET}")
+    print(f"  {C_GREEN}1{C_RESET}) {C_BOLD}Skip for now{C_RESET}                  {C_GREEN}[Default • Desktop only]{C_RESET}")
+    print(f"  {C_GREEN}2{C_RESET}) {C_BOLD}Grand Theft Auto V (GTA V RIP){C_RESET} {C_MAGENTA}[Wine 9 + DXVK + Steam shortcut, ~30 GB]{C_RESET}")
+    try:
+        game_choice = input(f"      {C_YELLOW}Select game option [1 or 2, default: 1]: {C_RESET}").strip()
+    except Exception:
+        game_choice = "1"
+
+    install_gta = (game_choice == "2")
+    game_label = "Grand Theft Auto V" if install_gta else "None"
+    log_ok(f"Selected Game: {C_BOLD}{game_label}{C_RESET}\n")
+
+    return use_highmem, desktop_mode, install_gta
+
+def install_gta_v():
+    log_step("4/4", "Installing GTA V (Wine + DXVK + Steam shortcut)...")
+    print(f"      {C_GRAY}Downloading ~13.7 GB, extracting ~15 GB, then registering in Steam.{C_RESET}", flush=True)
+    print(f"      {C_GRAY}This runs detached - watch progress with /gtav log.{C_RESET}", flush=True)
+    cmd = (
+        f"colab exec -s {SESSION_NAME} --env GTA_STEP=all "
+        f"-f gta_setup.py --timeout 0"
+    )
+    res = run_cmd(cmd)
+    if res.returncode != 0:
+        log_warn("GTA V install returned non-zero. Check /var/log/services/gta_setup.log")
+    else:
+        log_ok("GTA V installed and added to Steam.")
 
 def ensure_session(use_highmem=False):
     log_step("1/3", f"Checking Google Colab GPU session '{SESSION_NAME}'...")
@@ -238,8 +265,10 @@ def print_dashboard(links, ts_ip=None):
         make_card_row("Sunshine Direct (TS)", sunshine_ts, C_WHITE),
         make_card_row("Sunshine Credentials", links.get('sunshine_creds', 'admin / Sunshine123!'), C_WHITE),
         make_card_row("Tailscale Node IP", ts_display, C_WHITE),
-        bot + "\n"
     ]
+    if links.get('game'):
+        lines.insert(-1, make_card_row("Steam Game", links.get('game'), C_MAGENTA + C_BOLD))
+    lines.append(bot + "\n")
     print("\n".join(lines))
 
 # -------------------------------------------------------------
@@ -580,6 +609,10 @@ def show_help():
 │  {C_GREEN}/links{C_CYAN}            : {C_WHITE}Display full endpoint dashboard with PIN & creds     │
 │  {C_GREEN}/status{C_CYAN}           : {C_WHITE}Check GPU temperature, VRAM usage, and active stream │
 │  {C_GREEN}/restart{C_CYAN}          : {C_WHITE}Cleanly restart Sunshine & MoonlightWeb services     │
+│  {C_GREEN}/gtav{C_CYAN}             : {C_WHITE}Install/repair GTA V (Wine+DXVK+Steam shortcut)     │
+│  {C_GREEN}/gtav add{C_CYAN}         : {C_WHITE}Re-register the Steam shortcut (run after login)    │
+│  {C_GREEN}/gtav play{C_CYAN}        : {C_WHITE}Launch GTA V on the desktop right now               │
+│  {C_GREEN}/gtav log{C_CYAN}         : {C_WHITE}Tail the GTA V installer log                        │
 │  {C_GREEN}/tailscale{C_CYAN}        : {C_WHITE}Query Tailscale mesh connection state and node IP    │
 │  {C_GREEN}/pulse{C_CYAN}            : {C_WHITE}Trigger an immediate 12MB VRAM PyTorch keep-alive    │
 │  {C_GREEN}/help{C_CYAN}             : {C_WHITE}Show this list of commands                           │
@@ -613,7 +646,7 @@ def main():
     global latest_links
     banner()
     
-    use_highmem, desktop_mode = ask_startup_options()
+    use_highmem, desktop_mode, install_gta = ask_startup_options()
     ensure_session(use_highmem)
     setup_environment(desktop_mode)
     latest_links = get_links(verbose=True)
@@ -643,6 +676,12 @@ def main():
         print(f"      {C_GRAY}Tailscale skipped. MoonlightWeb will only be reachable locally.{C_RESET}")
 
     print_dashboard(latest_links, ts_ip)
+
+    # Optional GTA V install (runs after Steam is up so the shortcut lands)
+    if install_gta:
+        install_gta_v()
+        latest_links['game'] = "Grand Theft Auto V"
+        print_dashboard(latest_links, ts_ip)
 
     # Start Keep-Alive daemon thread
     pulse_thread = threading.Thread(target=keep_alive_worker, daemon=True)
@@ -696,6 +735,17 @@ def main():
                     print_dashboard(latest_links, ts_ip)
             elif cmd in ["/pulse", "pulse"]:
                 trigger_pulse()
+            elif cmd in ["/gtav", "/gta", "gtav", "gta"]:
+                if arg.lower() == "log":
+                    run_cmd(f"colab exec -s {SESSION_NAME} \"tail -n 40 /var/log/services/gta_setup.log 2>/dev/null || echo 'No GTA log yet'\"")
+                elif arg.lower() == "add":
+                    run_cmd(f"colab exec -s {SESSION_NAME} --env GTA_STEP=add -f gta_setup.py --timeout 0")
+                elif arg.lower() == "play":
+                    run_cmd(f"colab exec -s {SESSION_NAME} \"DISPLAY=:1 nohup setsid bash /content/gta_launch.sh >/var/log/services/gta_run.log 2>&1 & sleep 2; echo launched\"")
+                elif arg.lower() in ("status", "st"):
+                    run_cmd(f"colab exec -s {SESSION_NAME} -f gta_status.py")
+                else:
+                    install_gta_v()
             elif cmd in ["/help", "help", "/?"]:
                 show_help()
             elif cmd in ["/exit", "exit", "/quit", "quit", "q"]:
