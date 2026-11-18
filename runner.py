@@ -74,24 +74,70 @@ def run_cmd(cmd, capture=False):
 # -------------------------------------------------------------
 # 2. Session Lifecycle & Remote Provisioning
 # -------------------------------------------------------------
-def ensure_session():
+def ask_startup_options():
+    print(f"\n{C_CYAN}╭─────────────────────────────────────────────────────────────────────────────╮{C_RESET}")
+    print(f"{C_CYAN}│                   {C_WHITE}{C_BOLD}CONFIGURING CLOUD GAMING ENVIRONMENT{C_CYAN}                     │{C_RESET}")
+    print(f"{C_CYAN}╰─────────────────────────────────────────────────────────────────────────────╯{C_RESET}")
+
+    # 1. Hardware Shape Selection
+    print(f"\n{C_CYAN}[1/2] Select Hardware Memory Profile:{C_RESET}")
+    print(f"  {C_GREEN}1{C_RESET}) {C_BOLD}Tesla T4 High-RAM{C_RESET} (~54GB RAM)   {C_MAGENTA}[Recommended for Compute Unit Accounts]{C_RESET}")
+    print(f"  {C_GREEN}2{C_RESET}) {C_BOLD}Tesla T4 Standard{C_RESET} (~12GB RAM)   {C_GRAY}[For Free Tier / Standard Accounts]{C_RESET}")
+    try:
+        hw_choice = input(f"      {C_YELLOW}Select hardware [1 or 2, default: 1]: {C_RESET}").strip()
+    except Exception:
+        hw_choice = "1"
+    
+    use_highmem = (hw_choice != "2")
+    hw_label = "Tesla T4 High-RAM (~54GB RAM)" if use_highmem else "Tesla T4 Standard (~12GB RAM)"
+    log_ok(f"Selected Hardware: {C_BOLD}{hw_label}{C_RESET}")
+
+    # 2. Desktop Mode Selection
+    print(f"\n{C_CYAN}[2/2] Select Desktop Environment GUI:{C_RESET}")
+    print(f"  {C_GREEN}1{C_RESET}) {C_BOLD}Full Windows 11 Fluent GUI{C_RESET}     {C_CYAN}[Centered Taskbar, Start Menu, Desktop Icons, NVIDIA Wallpaper]{C_RESET}")
+    print(f"  {C_GREEN}2{C_RESET}) {C_BOLD}Pure Game Mode (No Desktop){C_RESET}    {C_YELLOW}[Maximum FPS, Ultra-Lean Openbox, Zero Overhead]{C_RESET}")
+    try:
+        gui_choice = input(f"      {C_YELLOW}Select desktop mode [1 or 2, default: 1]: {C_RESET}").strip()
+    except Exception:
+        gui_choice = "1"
+    
+    desktop_mode = "minimal" if gui_choice == "2" else "win11"
+    mode_label = "Full Windows 11 Fluent GUI" if desktop_mode == "win11" else "Pure Game Mode (No Desktop)"
+    log_ok(f"Selected Interface: {C_BOLD}{mode_label}{C_RESET}\n")
+
+    return use_highmem, desktop_mode
+
+def ensure_session(use_highmem=True):
     log_step("1/3", f"Checking Google Colab GPU session '{SESSION_NAME}'...")
     res = run_cmd("colab sessions", capture=True)
     if SESSION_NAME not in res.stdout:
-        print(f"      {C_GRAY}Session not found. Allocating fresh Tesla T4 runtime...{C_RESET}", flush=True)
-        res_new = run_cmd(f"colab new -s {SESSION_NAME} --gpu t4")
+        if use_highmem:
+            print(f"      {C_GRAY}Session not found. Allocating High-RAM Tesla T4 runtime (--high-mem)...{C_RESET}", flush=True)
+            res_new = run_cmd(f"colab new -s {SESSION_NAME} --gpu t4 --high-mem")
+            if res_new.returncode != 0:
+                print(f"      {C_YELLOW}High-RAM allocation returned non-zero. Attempting standard T4 shape...{C_RESET}", flush=True)
+                res_new = run_cmd(f"colab new -s {SESSION_NAME} --gpu t4")
+        else:
+            print(f"      {C_GRAY}Session not found. Allocating Standard Tesla T4 runtime...{C_RESET}", flush=True)
+            res_new = run_cmd(f"colab new -s {SESSION_NAME} --gpu t4")
         if res_new.returncode != 0:
-            log_err("Failed to allocate Colab GPU session. Please check your network or auth.")
+            log_err("Failed to allocate Colab GPU session. Please check your network, auth, or quota.")
             sys.exit(1)
-        log_ok(f"Session '{SESSION_NAME}' is READY and active.")
+        shape_info = "High-RAM (~54GB)" if use_highmem else "Standard (~12GB)"
+        log_ok(f"Session '{SESSION_NAME}' is READY and active ({shape_info}).")
     else:
         log_ok(f"Session '{SESSION_NAME}' is currently active.")
 
-def setup_environment():
-    log_step("2/3", "Deploying hardware environment (Xorg, NvFBC, WebGPU, Sunshine, ColabPad, Tunnels)...")
-    run_cmd(f"colab upload -s {SESSION_NAME} colabpad.py /usr/local/bin/colabpad.py")
+def setup_environment(desktop_mode="win11"):
+    mode_desc = "Windows 11 Fluent GUI" if desktop_mode == "win11" else "Pure Game Mode"
+    log_step("2/3", f"Deploying hardware environment ({mode_desc}, Xorg, NvFBC, WebGPU, Sunshine, Tunnels)...")
+    
+    # Store desktop mode in remote /tmp/desktop_mode.txt
+    set_mode_cmd = f"python3 -c \\\"open('/tmp/desktop_mode.txt', 'w').write('{desktop_mode}')\\\""
+    run_cmd(f'colab exec -s {SESSION_NAME} "{set_mode_cmd}"', capture=True)
+
     print(f"      {C_GRAY}Executing parallel automated deployment on remote instance...{C_RESET}", flush=True)
-    res = run_cmd(f"colab exec -s {SESSION_NAME} -f setup_remote.py --timeout 0")
+    res = run_cmd(f"colab exec -s {SESSION_NAME} --env DESKTOP_MODE={desktop_mode} -f setup_remote.py --timeout 0")
     if res.returncode != 0:
         log_warn("Deployment returned non-zero code. Verifying active services...")
     else:
@@ -188,7 +234,6 @@ def print_dashboard(links, ts_ip=None):
         make_card_row("Moonlight Host IP", ts_display, C_GREEN + C_BOLD),
         make_card_row("Direct Sunshine URL", sunshine_ts, C_WHITE),
         make_card_row("Public Sunshine WebUI", links.get('sunshine_url', 'Pending'), C_WHITE),
-        make_card_row("ColabPad Web Gamepad", links.get('gamepad_url', 'Pending'), C_GREEN + C_BOLD),
         make_card_row("Sunshine Credentials", links.get('sunshine_creds', 'admin / Sunshine123!'), C_WHITE),
         make_card_row("Interactive Desktop", desktop_url, C_WHITE),
         make_card_row("Moonlight Web Client", links.get('moonlight_url', 'Pending'), C_WHITE),
@@ -283,26 +328,12 @@ def show_cflinks():
         header,
         sep,
         make_card_row("Sunshine WebUI (PIN)", sunshine_url, C_WHITE),
-        make_card_row("ColabPad Web Gamepad", latest_links.get('gamepad_url', 'Pending'), C_GREEN + C_BOLD),
         make_card_row("Moonlight Web Client", moonlight_url, C_WHITE),
         make_card_row("Interactive Desktop", desktop_url, C_WHITE),
         make_card_row("Web Credentials", "admin / Sunshine123!", C_GREEN),
         bot + "\n"
     ]
     print("\n".join(lines))
-
-def show_gamepad():
-    global latest_links
-    fresh = get_links(verbose=False)
-    if fresh:
-        latest_links.update(fresh)
-    gamepad_url = latest_links.get('gamepad_url', 'Pending')
-    print(f"\n{C_CYAN}[*] ColabPad Virtual Xbox 360 Controller Status:{C_RESET}")
-    print(f"    {C_GREEN}✓{C_RESET} Device Node   : {C_WHITE}Kernel Xbox 360 Controller (/dev/input/event*){C_RESET}")
-    print(f"    {C_GREEN}✓{C_RESET} Compatibility : {C_WHITE}Steam, Proton, Wine, SDL2, RetroArch{C_RESET}")
-    print(f"    {C_GREEN}✓{C_RESET} Mouse/Keyboard: {C_WHITE}Protected (Xorg XTest native 0ms latency){C_RESET}")
-    print(f"    {C_YELLOW}🌐 Web Gamepad UI{C_RESET} : {C_GREEN}{C_BOLD}{gamepad_url}{C_RESET}")
-    print(f"    {C_GRAY}💡 Tip: Open this link on your phone, tablet, or browser to control games!{C_RESET}\n")
 
 def show_accel():
     print(f"\n{C_CYAN}[*] Verifying GPU Hardware 3D & Video Acceleration on session '{SESSION_NAME}'...{C_RESET}", flush=True)
@@ -426,10 +457,10 @@ import subprocess, time
 subprocess.run('pkill -9 -x -u user sunshine 2>/dev/null || true', shell=True)
 subprocess.run('killall -9 zenity steam 2>/dev/null || true', shell=True)
 time.sleep(1)
-subprocess.run('rm -rf /dev/input /dev/uinput /dev/uhid', shell=True)
-subprocess.run('pkill -9 -f systemd-udevd 2>/dev/null || true', shell=True)
+subprocess.run('mknod /dev/uinput c 10 223 2>/dev/null || true; chmod 666 /dev/uinput', shell=True)
+subprocess.run('mkdir -p /dev/input && chmod 777 /dev/input', shell=True)
 
-# Export accessibility and IME flags so typing special characters never blocks
+# Export accessibility, IME flags, and selective uinput shim
 env_prefix = (
     'export DISPLAY=:1; '
     'export XDG_RUNTIME_DIR=/run/user/1001; '
@@ -437,13 +468,30 @@ env_prefix = (
     'export GTK_IM_MODULE=xim; '
     'export QT_IM_MODULE=xim; '
     'export XMODIFIERS=@im=none; '
+    'export LD_PRELOAD=/usr/local/lib/libselective_uinput.so; '
 )
 
 subprocess.run(f'su - user -c "{env_prefix} nohup sunshine > /home/user/sunshine.log 2>&1 &"', shell=True)
 subprocess.run(f'su - user -c "{env_prefix} nohup openbox > /home/user/openbox.log 2>&1 &"', shell=True)
 subprocess.run('DISPLAY=:1 xset s off -dpms s noblank 2>/dev/null || true', shell=True)
 subprocess.run('DISPLAY=:1 xset r rate 250 30 2>/dev/null || true', shell=True)
-subprocess.run('su - user -c "DISPLAY=:1 feh --bg-fill /home/user/nvidia-wallpaper.jpg &"', shell=True)
+
+import os
+wallpaper = '/home/user/nvidia-wallpaper.jpg' if os.path.exists('/home/user/nvidia-wallpaper.jpg') else '/home/user/win11-wallpaper.jpg'
+subprocess.run(f'su - user -c "DISPLAY=:1 feh --bg-fill {wallpaper} &" 2>/dev/null || true', shell=True)
+
+# Restart desktop components if configured
+mode = "win11"
+if os.path.exists("/tmp/desktop_mode.txt"):
+    try:
+        mode = open("/tmp/desktop_mode.txt").read().strip().lower()
+    except Exception:
+        pass
+
+if mode == "win11":
+    subprocess.run('su - user -c "DISPLAY=:1 nohup pcmanfm --desktop >/dev/null 2>&1 &" 2>/dev/null || true', shell=True)
+    subprocess.run('su - user -c "DISPLAY=:1 nohup tint2 >/dev/null 2>&1 &" 2>/dev/null || true', shell=True)
+    subprocess.run('su - user -c "DISPLAY=:1 nohup picom -b --corner-radius 8 >/dev/null 2>&1 &" 2>/dev/null || true', shell=True)
 print('RESTARTED_OK')
 """
     with open("temp_restart.py", "w") as f:
@@ -472,7 +520,6 @@ def show_help():
 │                         {C_WHITE}{C_BOLD}COMMAND CONSOLE MANUAL{C_CYAN}                              │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  {C_GREEN}/pair <4-digit PIN>{C_CYAN} : {C_WHITE}Instantly pair Moonlight client (e.g. /pair 1234)   │
-│  {C_GREEN}/gamepad{C_CYAN}            : {C_WHITE}Show ColabPad virtual gamepad status and Web URL     │
 │  {C_GREEN}/cflink{C_CYAN}             : {C_WHITE}Display all active Cloudflare public tunnel links    │
 │  {C_GREEN}/accel{C_CYAN}              : {C_WHITE}Verify OpenGL 4.6, Vulkan 1.4 & NVENC hardware accel │
 │  {C_GREEN}/unfreeze{C_CYAN}           : {C_WHITE}Release stuck Shift/Alt/Ctrl keys and unfreeze input │
@@ -512,8 +559,9 @@ def main():
     global latest_links
     banner()
     
-    ensure_session()
-    setup_environment()
+    use_highmem, desktop_mode = ask_startup_options()
+    ensure_session(use_highmem)
+    setup_environment(desktop_mode)
     latest_links = get_links(verbose=True)
 
     # Tailscale interactive prompt
@@ -562,8 +610,6 @@ def main():
                 if not arg:
                     arg = input(f"{C_YELLOW}[?] Enter 4-digit Moonlight PIN: {C_RESET}").strip()
                 pair_pin(arg)
-            elif cmd in ["/gamepad", "/pad", "gamepad", "pad"]:
-                show_gamepad()
             elif cmd in ["/cflink", "/cf", "cflink", "cf"]:
                 show_cflinks()
             elif cmd in ["/accel", "/gpu", "accel", "gpu"]:

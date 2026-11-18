@@ -6,7 +6,10 @@ High-performance, ultra-low-latency game and desktop streaming on Google Colab (
 
 ### Features & Roadmap
 
-- [x] Native Ubuntu 24.04 Noble LTS support (clean official repository packages)
+- [x] Full Windows 11 Fluent Dark GUI (Centered Tint2 Taskbar, Rofi Start Menu, Desktop Icons, Rounded Windows, Papirus icons)
+- [x] Interactive startup options: Tesla T4 High-RAM (~54GB RAM) vs Standard (~12GB RAM) & Windows 11 GUI vs Pure Game Mode
+- [x] Selective uinput LD_PRELOAD C shim (Moonlight on-screen Xbox 360 controller via uinput while keeping 0ms XTest mouse & keyboard)
+- [x] High-resolution NVIDIA GeForce gaming desktop wallpaper
 - [x] Hardware Xorg display server with direct NvFBC VRAM capture at 60 FPS
 - [x] Custom 128-byte VESA EDID unlocking native 1920x1080, 1366x768, and 1280x720 resolutions
 - [x] Hardware WebGPU and Vulkan acceleration in Google Chrome (Dawn engine)
@@ -15,10 +18,8 @@ High-performance, ultra-low-latency game and desktop streaming on Google Colab (
 - [x] Low-latency PulseAudio audio subsystem (2ms fragment buffer, UID 1001 user isolation)
 - [x] Dynamic Cloudflare tunnel origin extraction to prevent Sunshine CSRF 403 errors
 - [x] Native ultra-low-latency X11 XTest mouse and keyboard input (0ms driverless input pipeline)
-- [x] ColabPad userspace virtual Xbox 360 controller daemon (zero-install Web Gamepad UI & physical controller support)
-- [x] Persistent NVIDIA desktop wallpaper via Openbox autostart
 - [x] Asynchronous multi-threaded parallel deployment engine (50%+ faster bootstrap)
-- [x] Interactive live CLI console (`/pair`, `/status`, `/restart`, `/links`, `/pulse`)
+- [x] Interactive live CLI console (`/pair`, `/status`, `/restart`, `/links`, `/pulse`, `/accel`, `/unfreeze`)
 - [x] Headless PyTorch 12MB VRAM GPU keepalive pulse loop to prevent Colab idle timeouts
 - [x] One-click Windows automation launchers (`start.bat`, `pair.bat`, `push.bat`)
 
@@ -114,12 +115,14 @@ Double-click `start.bat` (or execute in terminal):
 ```cmd
 start.bat
 ```
-The script will:
-- Check for or create the Colab GPU session (`t4`).
-- Deploy all drivers, Xorg, audio, Chrome, Steam, and Sunshine.
-- Print live Cloudflare access URLs in the terminal.
+The script will interactively guide you:
+- **Hardware Profile**: Choose between `Tesla T4 High-RAM` (~54GB RAM for accounts with Colab Compute Units) or `Tesla T4 Standard` (~12GB RAM for free accounts).
+- **Desktop Environment**: Choose between `Full Windows 11 Fluent GUI` (Centered taskbar, Start Menu, Desktop shortcuts, NVIDIA wallpaper, rounded windows) or `Pure Game Mode` (headless ultra-lean Openbox for maximum FPS and 0ms latency).
+- Automatically allocate and configure the Colab GPU runtime (`t4`).
+- Deploy all drivers, Xorg, audio, Chrome, Steam, Sunshine, and desktop daemons.
+- Print live Cloudflare access URLs and Moonlight pairing codes in the terminal.
 - Prompt whether to enable Tailscale for ultra-low latency streaming (Recommended: `Y`).
-- Start the automated keepalive loop.
+- Start the automated keepalive pulse loop.
 
 ### 2. Connect via Moonlight
 
@@ -166,8 +169,9 @@ To ensure stutter-free streaming over the relay:
 ## Repository Files
 
 - `start.bat`: One-click Windows launcher.
-- `runner.py`: Host orchestrator, URL parser, Tailscale watcher, and keepalive loop.
-- `setup_remote.py`: Automated remote installation and service daemon configuration.
+- `runner.py`: Host orchestrator, URL parser, Tailscale watcher, and keepalive loop with hardware and desktop selectors.
+- `setup_remote.py`: Automated remote installation, Windows 11 Fluent desktop, and Sunshine daemon configuration.
+- `selective_uinput.c`: Standalone C LD_PRELOAD shim intercepting `ioctl(UI_DEV_CREATE)` to enable virtual gamepad while keeping 0ms XTest mouse/keyboard.
 - `pair.bat` / `pair.py`: One-click Moonlight pairing utility.
 - `check_ts.py`: Helper script to query remote Tailscale status and IP.
 - `sync_ts_ip.py`: Helper script to synchronize active Tailscale IP into Sunshine.

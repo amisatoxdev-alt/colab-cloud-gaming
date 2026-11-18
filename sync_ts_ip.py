@@ -30,9 +30,9 @@ if new_origin not in origins:
 # Update config with correct external_ip and origins
 current_conf = re.sub(r'external_ip\s*=.*', f'external_ip = {ts_ip}', current_conf)
 current_conf = re.sub(r'csrf_allowed_origins\s*=.*', f'csrf_allowed_origins = {",".join(origins)}', current_conf)
-current_conf = current_conf.replace("controller = enabled\n", "").replace("gamepad = x360\n", "")
-subprocess.run("rm -rf /dev/input /dev/uinput /dev/uhid", shell=True)
-subprocess.run("pkill -9 -f systemd-udevd 2>/dev/null || true", shell=True)
+# Ensure controller is enabled
+if "controller =" not in current_conf:
+    current_conf += "\ncontroller = enabled\ngamepad = x360\ngamepad_driver = uinput\n"
 
 with open("/root/.config/sunshine/sunshine.conf", "w") as f:
     f.write(current_conf)
@@ -40,12 +40,17 @@ with open("/home/user/.config/sunshine/sunshine.conf", "w") as f:
     f.write(current_conf)
 
 # Restart Sunshine under user
-subprocess.run("killall -9 sunshine 2>/dev/null || true", shell=True)
+subprocess.run("pkill -9 -x -u user sunshine 2>/dev/null || true", shell=True)
 time.sleep(1)
 sunshine_cmd = (
     'su - user -c "'
     'export DISPLAY=:1; '
     'export XDG_RUNTIME_DIR=/run/user/1001; '
+    'export NO_AT_BRIDGE=1; '
+    'export GTK_IM_MODULE=xim; '
+    'export QT_IM_MODULE=xim; '
+    'export XMODIFIERS=@im=none; '
+    'export LD_PRELOAD=/usr/local/lib/libselective_uinput.so; '
     'nohup sunshine > /home/user/sunshine.log 2>&1 &"'
 )
 subprocess.run(sunshine_cmd, shell=True)
