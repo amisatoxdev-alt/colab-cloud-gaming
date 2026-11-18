@@ -125,8 +125,9 @@ The script will interactively guide you:
 - **Desktop Environment**: Choose between `Full Windows 11 Fluent GUI` (Centered taskbar, Start Menu, Desktop shortcuts, NVIDIA wallpaper, rounded windows) or `Pure Game Mode` (headless ultra-lean Openbox for maximum FPS and 0ms latency).
 - Automatically allocate and configure the Colab GPU runtime (`t4`).
 - Deploy all drivers, Xorg, audio, Chrome, Steam, Sunshine, and desktop daemons.
-- Print the live Tailscale Funnel URL, the MoonlightWeb Access PIN, and Moonlight pairing codes in the terminal.
 - Prompt whether to enable Tailscale for ultra-low latency streaming (Recommended: `Y`).
+- After Tailscale authorization, automatically publish MoonlightWeb through Tailscale Funnel and mint a fresh one-time **web Access PIN**.
+- Print the live Funnel URL, the Access PIN, and Sunshine credentials as a dashboard.
 - Start the automated keepalive pulse loop.
 
 ### 2. Connect via Moonlight
