@@ -195,15 +195,19 @@ except Exception:
 if not pairings:
     print("NO_PENDING_REQUEST")
 else:
-    pairing_id = pairings[0].get("pairing_id")
-    client_name = pairings[0].get("client_name", "Moonlight Client")
-    payload = json.dumps({{"pairing_id": pairing_id, "pin": "{pin}", "name": client_name}})
-    post_cmd = f"curl -s -k -u admin:Sunshine123! -X POST https://127.0.0.1:47990/api/pin -H 'Origin: https://localhost:47990' -H 'Content-Type: application/json' -d '{{payload}}'"
-    r_post = subprocess.run(post_cmd, shell=True, text=True, capture_output=True)
-    if '"status":true' in r_post.stdout or 'success' in r_post.stdout.lower() or 'named_status' in r_post.stdout or (r_post.returncode == 0 and "error" not in r_post.stdout.lower()):
-        print(f"SUCCESS:{{client_name}}")
+    target = pairings[0]
+    pairing_id = target.get("id") or target.get("pairing_id")
+    client_name = target.get("name") or target.get("client_name") or "Moonlight Client"
+    if not pairing_id:
+        print("FAILED:Missing pairing id in pending request")
     else:
-        print(f"FAILED:{{r_post.stdout.strip()}}")
+        payload = json.dumps({{"pairing_id": str(pairing_id), "pin": "{pin}", "name": str(client_name)}})
+        post_cmd = f"curl -s -k -u admin:Sunshine123! -X POST https://127.0.0.1:47990/api/pin -H 'Origin: https://localhost:47990' -H 'Content-Type: application/json' -d '{{payload}}'"
+        r_post = subprocess.run(post_cmd, shell=True, text=True, capture_output=True)
+        if '"status":true' in r_post.stdout or 'success' in r_post.stdout.lower() or 'named_status' in r_post.stdout or (r_post.returncode == 0 and "error" not in r_post.stdout.lower()):
+            print(f"SUCCESS:{{client_name}}")
+        else:
+            print(f"FAILED:{{r_post.stdout.strip()}}")
 """
     with open("temp_pair.py", "w") as f:
         f.write(code)
