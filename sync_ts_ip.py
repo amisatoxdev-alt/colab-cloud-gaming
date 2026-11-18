@@ -30,10 +30,9 @@ if new_origin not in origins:
 # Update config with correct external_ip and origins
 current_conf = re.sub(r'external_ip\s*=.*', f'external_ip = {ts_ip}', current_conf)
 current_conf = re.sub(r'csrf_allowed_origins\s*=.*', f'csrf_allowed_origins = {",".join(origins)}', current_conf)
-if "controller = enabled" not in current_conf:
-    current_conf += "\ncontroller = enabled\ngamepad = x360\n"
-subprocess.run("mknod /dev/uinput c 10 223 2>/dev/null || true; chmod 666 /dev/uinput", shell=True)
-subprocess.run("/lib/systemd/systemd-udevd --daemon 2>/dev/null || true", shell=True)
+current_conf = current_conf.replace("controller = enabled\n", "").replace("gamepad = x360\n", "")
+subprocess.run("rm -rf /dev/input /dev/uinput /dev/uhid", shell=True)
+subprocess.run("pkill -9 -f systemd-udevd 2>/dev/null || true", shell=True)
 
 with open("/root/.config/sunshine/sunshine.conf", "w") as f:
     f.write(current_conf)

@@ -426,9 +426,8 @@ import subprocess, time
 subprocess.run('pkill -9 -x -u user sunshine 2>/dev/null || true', shell=True)
 subprocess.run('killall -9 zenity steam 2>/dev/null || true', shell=True)
 time.sleep(1)
-subprocess.run('mknod /dev/uinput c 10 223 2>/dev/null || true; chmod 666 /dev/uinput', shell=True)
-subprocess.run('mkdir -p /dev/input && chmod 777 /dev/input', shell=True)
-subprocess.run('/lib/systemd/systemd-udevd --daemon 2>/dev/null || true', shell=True)
+subprocess.run('rm -rf /dev/input /dev/uinput /dev/uhid', shell=True)
+subprocess.run('pkill -9 -f systemd-udevd 2>/dev/null || true', shell=True)
 
 # Export accessibility and IME flags so typing special characters never blocks
 env_prefix = (
