@@ -123,12 +123,41 @@ start.bat
 ```
 The script will interactively guide you:
 - **Hardware Profile**: Choose between `Tesla T4 High-RAM` (~54GB RAM for accounts with Colab Compute Units) or `Tesla T4 Standard` (~12GB RAM for free accounts).
+- **Datacenter Region**: `Auto` (Singapore-first) / `Singapore` / `United States` / `Europe` / `Any`. See the region note below.
 - **Desktop Environment**: Choose between `Full Windows 11 Fluent GUI` (Centered taskbar, Start Menu, Desktop shortcuts, NVIDIA wallpaper, rounded windows) or `Pure Game Mode` (headless ultra-lean Openbox for maximum FPS and 0ms latency).
+- **Optional game**: Install GTA V with Steam integration, or skip.
 - Automatically allocate and configure the Colab GPU runtime (`t4`).
 - Deploy all drivers, Xorg, audio, Chrome, Steam, Sunshine, and desktop daemons.
 - Prompt whether to enable Tailscale for ultra-low latency streaming (Recommended: `Y`).
 - After Tailscale authorization, automatically publish MoonlightWeb through Tailscale Funnel and mint a fresh one-time **web Access PIN**.
 - Print the live Funnel URL, the Access PIN, and Sunshine credentials as a dashboard.
+
+> [!IMPORTANT]
+> **Colab has no region flag.** `colab new` exposes only `--gpu`, `--tpu`, `--high-mem` and
+> `--session`. The datacenter zone is assigned by Google and is visible only inside the
+> runtime id, e.g. `gpu-t4-s-usw1b1-j51ah3434c1g` → `usw1` → **us-west1**.
+> Region preference is therefore implemented as *stop → wait ~20 s → re-allocate*, retried
+> up to 8 times until the requested family appears. Zone tokens recognised:
+>
+> | Token | Zone | Token | Zone |
+> |---|---|---|---|
+> | `use1` `use2` `use4` | us-east1/2/4 | `usw1` `usw2` `usw4` | us-west1/2/4 |
+> | `usc1` | us-central1 | `euw1` `euw2` `euw3` `euw4` | europe-west1/2/3/4 |
+> | `euc1` | europe-central2 | `asse1` `asse2` `apse1` `apse2` | asia-southeast1/2 |
+>
+> If every attempt misses, the launcher **keeps the last working VM** and warns instead of
+> exiting — you never end up with no session just because the region was wrong.
+
+> [!WARNING]
+> **Orphaned `[?]` assignments.** If an allocation is interrupted, the Colab server can hold
+> an assignment while the local `~/.config/colab-cli/sessions.json` is empty. `colab sessions`
+> then prints `[?] gpu-t4-s-...`, `colab stop` answers *"Session '?' not found"*, and any new
+> allocation is refused with `precondition failed`. The CLI cannot clear this by name; only
+> the client API's `unassign(endpoint)` can. `colab_free.py` (and `/free` in the console)
+> does exactly that. The launcher now calls it automatically before allocating.
+> Detection also uses the bracketed name (`^\[name\]`), never a substring search — `"t4"` is
+> a substring of both `gpu-t4-s-...` and `Hardware: T4`, which previously made the launcher
+> believe a session existed when it did not.
 - Start the automated keepalive pulse loop.
 
 ### 2. Connect via Moonlight
@@ -170,6 +199,7 @@ While the background keep-alive pulse keeps your GPU warm, you can run commands 
 - `/region us`  : Stop and re-allocate until a US zone is assigned.
 - `/region eu`  : Stop and re-allocate until an EU zone is assigned.
 - `/region any` : Accept whatever region Colab gives (no retry).
+- `/free`       : Release orphaned `[?]` server assignments that block new allocations.
 - `/pulse`      : Manually trigger an immediate PyTorch VRAM pulse.
 - `/gtav`       : Install GTA V (Wine + DXVK + Steam shortcut) if not done at startup.
 - `/gtav add`   : Re-register the Steam non-Steam shortcut (run once after logging into Steam).
@@ -259,3 +289,4 @@ To ensure stutter-free streaming over the relay:
 - `push.bat`: One-click Git push script for repo maintenance.
 - `gta_setup.py`: One-shot GTA V installer — Wine 9 + DXVK, Google Drive download, 7z extract, Steam library staging, and non-Steam shortcut registration.
 - `gta_status.py`: Reports GTA V install state (archive, game dir, Wine, DXVK, Steam shortcut, running processes).
+- `colab_free.py`: Lists and releases orphaned Colab server assignments (`[?]` rows) that `colab stop` cannot address.
