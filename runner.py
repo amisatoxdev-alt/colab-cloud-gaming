@@ -457,10 +457,9 @@ import subprocess, time
 subprocess.run('pkill -9 -x -u user sunshine 2>/dev/null || true', shell=True)
 subprocess.run('killall -9 zenity steam 2>/dev/null || true', shell=True)
 time.sleep(1)
-subprocess.run('mknod /dev/uinput c 10 223 2>/dev/null || true; chmod 666 /dev/uinput', shell=True)
-subprocess.run('mkdir -p /dev/input && chmod 777 /dev/input', shell=True)
+subprocess.run('rm -rf /dev/uinput /dev/input /dev/uhid /usr/local/lib/libselective_uinput.so', shell=True)
 
-# Export accessibility, IME flags, and selective uinput shim
+# Export accessibility and pure XTest environment
 env_prefix = (
     'export DISPLAY=:1; '
     'export XDG_RUNTIME_DIR=/run/user/1001; '
@@ -468,7 +467,7 @@ env_prefix = (
     'export GTK_IM_MODULE=xim; '
     'export QT_IM_MODULE=xim; '
     'export XMODIFIERS=@im=none; '
-    'export LD_PRELOAD=/usr/local/lib/libselective_uinput.so; '
+    'unset LD_PRELOAD; '
 )
 
 subprocess.run(f'su - user -c "{env_prefix} nohup sunshine > /home/user/sunshine.log 2>&1 &"', shell=True)

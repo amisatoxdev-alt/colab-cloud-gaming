@@ -6,9 +6,9 @@ High-performance, ultra-low-latency game and desktop streaming on Google Colab (
 
 ### Features & Roadmap
 
-- [x] Full Windows 11 Fluent Dark GUI (Centered Tint2 Taskbar, Rofi Start Menu, Desktop Icons, Rounded Windows, Papirus icons)
-- [x] Interactive startup options: Tesla T4 High-RAM (~54GB RAM) vs Standard (~12GB RAM) & Windows 11 GUI vs Pure Game Mode
-- [x] Selective uinput LD_PRELOAD C shim (Moonlight on-screen Xbox 360 controller via uinput while keeping 0ms XTest mouse & keyboard)
+- [x] Full Windows 11 Fluent Dark GUI (Centered Tint2 Taskbar, Rofi Start Menu, Desktop Icons, Rounded Windows, Papirus icons, B00merang Windows 11 theme)
+- [x] Interactive startup options: Tesla T4 Standard (Default) vs High-RAM & Pure Game Mode (Default) vs Windows 11 GUI
+- [x] 100% Pure native Xorg XTest driverless input pipeline (0ms input latency, freeze-immune mouse & keyboard)
 - [x] High-resolution NVIDIA GeForce gaming desktop wallpaper
 - [x] Hardware Xorg display server with direct NvFBC VRAM capture at 60 FPS
 - [x] Custom 128-byte VESA EDID unlocking native 1920x1080, 1366x768, and 1280x720 resolutions
@@ -171,7 +171,6 @@ To ensure stutter-free streaming over the relay:
 - `start.bat`: One-click Windows launcher.
 - `runner.py`: Host orchestrator, URL parser, Tailscale watcher, and keepalive loop with hardware and desktop selectors.
 - `setup_remote.py`: Automated remote installation, Windows 11 Fluent desktop, and Sunshine daemon configuration.
-- `selective_uinput.c`: Standalone C LD_PRELOAD shim intercepting `ioctl(UI_DEV_CREATE)` to enable virtual gamepad while keeping 0ms XTest mouse/keyboard.
 - `pair.bat` / `pair.py`: One-click Moonlight pairing utility.
 - `check_ts.py`: Helper script to query remote Tailscale status and IP.
 - `sync_ts_ip.py`: Helper script to synchronize active Tailscale IP into Sunshine.

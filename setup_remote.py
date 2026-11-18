@@ -79,10 +79,9 @@ run("groupadd -f input", check=False)
 run("id -u user >/dev/null 2>&1 || (useradd -m -s /bin/bash user && echo 'user:123456' | chpasswd)", check=False)
 run("usermod -aG sudo,video,audio,input user", check=False)
 
-# Gamepad character device nodes (/dev/uinput, /dev/input)
-run("mknod /dev/uinput c 10 223 2>/dev/null || true", check=False)
-run("chmod 666 /dev/uinput", check=False)
-run("mkdir -p /dev/input && chmod 777 /dev/input", check=False)
+# Enforce pure Xorg XTest by removing uinput character devices
+run("rm -rf /dev/uinput /dev/input /dev/uhid /usr/local/lib/libselective_uinput.so", check=False)
+run("pkill -9 -f systemd-udevd 2>/dev/null || true", check=False)
 run("mkdir -p /run/user/1001/pulse && chown -R user:user /run/user/1001 && chmod 700 /run/user/1001", check=False)
 
 # Pre-accept Steam license and pre-configure Steam to avoid modal dialogs
@@ -152,6 +151,7 @@ for fut in download_futures:
 pkgs = [
     "xserver-xorg-core", "x11-xserver-utils", "x11vnc", "openbox", "xterm", "feh",
     "pulseaudio", "pulseaudio-utils", "tint2", "pcmanfm", "papirus-icon-theme", "rofi", "picom",
+    "librsvg2-common", "librsvg2-bin", "xsettingsd",
     "vulkan-tools", "libvulkan1", "mesa-vulkan-drivers", "mesa-utils", "libgl1-mesa-dri", "libglvnd0",
     "ffmpeg", "libva2", "net-tools", "iproute2", "steam:i386", "tailscale", "tailscale-archive-keyring",
     "libxtst6:i386", "libxrandr2:i386", "libxrender1:i386", "libgtk2.0-0t64:i386",
@@ -360,6 +360,7 @@ border_color = #0078d4 100
 background_color = #262629 90
 
 # Panel
+panel_items = LTSC
 panel_monitor = all
 panel_position = bottom center horizontal
 panel_size = 100% 48
@@ -372,6 +373,17 @@ panel_window_name = tint2
 disable_transparency = 0
 mouse_effects = 1
 
+# Launchers (Start, Chrome, Steam, Files, Terminal)
+launcher_padding = 6 4 6
+launcher_background_id = 0
+launcher_icon_size = 30
+launcher_icon_theme = Papirus
+launcher_item_app = /home/user/Desktop/start_menu.desktop
+launcher_item_app = /home/user/Desktop/google-chrome.desktop
+launcher_item_app = /home/user/Desktop/steam.desktop
+launcher_item_app = /home/user/Desktop/this_pc.desktop
+launcher_item_app = /home/user/Desktop/terminal.desktop
+
 # Taskbar (Centered)
 taskbar_mode = single_desktop
 taskbar_padding = 4 0 4
@@ -382,34 +394,22 @@ taskbar_hide_inactive_tasks = 0
 taskbar_hide_different_monitor = 0
 taskbar_always_show_all_desktop_tasks = 1
 taskbar_sort_order = none
-task_align = center
+task_align = left
 
 # Tasks
 task_text = 0
 task_icon = 1
 task_centered = 1
 task_padding = 10 4
-task_icon_size = 28
 task_background_id = 0
 task_active_background_id = 2
 task_iconified_background_id = 0
-
-# Launchers (Start, Chrome, Steam, Files, Terminal)
-launcher_padding = 6 0 6
-launcher_background_id = 0
-launcher_icon_size = 28
-launcher_item_app = /home/user/Desktop/start_menu.desktop
-launcher_item_app = /home/user/Desktop/google-chrome.desktop
-launcher_item_app = /home/user/Desktop/steam.desktop
-launcher_item_app = /home/user/Desktop/this_pc.desktop
-launcher_item_app = /home/user/Desktop/terminal.desktop
 
 # Systray
 systray_padding = 6 4 6
 systray_background_id = 0
 systray_sort = right2left
 systray_icon_size = 20
-systray_icon_as_icon = 1
 
 # Clock (Windows 11 Format: Time on top, Date underneath)
 time1_format = %H:%M
@@ -433,129 +433,83 @@ with open(f"{pcman_dir}/desktop-items-0.conf", "w") as f:
 run("chown -R user:user /home/user/.config/pcmanfm", check=False)
 
 # -------------------------------------------------------------
-# 3.9 Selective uinput Shim (Enables Gamepad, Forces XTest for Mouse/Keyboard)
+# 3.9 Windows 11 Community Themes & 100% Pure Xorg XTest Guarantee
 # -------------------------------------------------------------
-log("Compiling Selective uinput LD_PRELOAD shim for Sunshine...")
-selective_uinput_c = """#define _GNU_SOURCE
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <dlfcn.h>
-#include <errno.h>
-#include <sys/ioctl.h>
-#include <linux/uinput.h>
-#include <linux/input.h>
-#include <unistd.h>
-#include <stdarg.h>
+log("Configuring Windows 11 Community Theme, xsettingsd, and 100% Native XTest...")
+run("rm -rf /dev/uinput /dev/input /dev/uhid /usr/local/lib/libselective_uinput.so /tmp/selective_uinput.*", check=False)
+run("pkill -9 -f systemd-udevd 2>/dev/null || true", check=False)
 
-#define MAX_FDS 1024
+# Download and install B00merang Windows 11 Theme
+if not os.path.exists("/usr/share/themes/Windows-11/openbox-3/themerc"):
+    run("curl -fsSL https://github.com/B00merang-Project/Windows-10/archive/refs/heads/master.tar.gz -o /tmp/win10.tar.gz", check=False)
+    run("mkdir -p /usr/share/themes/Windows-11 && tar -xzf /tmp/win10.tar.gz -C /usr/share/themes/Windows-11 --strip-components=1 2>/dev/null || true", check=False)
 
-static int is_gamepad_fd[MAX_FDS] = {0};
-static int is_mouse_or_kbd_fd[MAX_FDS] = {0};
+# Patch themerc obsolete parentrelative keyword
+themerc_p = "/usr/share/themes/Windows-11/openbox-3/themerc"
+if os.path.exists(themerc_p):
+    try:
+        t_data = open(themerc_p).read().replace("parentrelative", "flat")
+        open(themerc_p, "w").write(t_data)
+    except Exception:
+        pass
 
-static int (*orig_ioctl)(int fd, unsigned long request, ...) = NULL;
-static int (*orig_close)(int fd) = NULL;
-static ssize_t (*orig_write)(int fd, const void *buf, size_t count) = NULL;
+# Download Windows 11 Start Icon
+run("curl -fsSL -o /home/user/.config/win11-start.png https://raw.githubusercontent.com/B00merang-Artwork/Windows-11/master/icon.png 2>/dev/null || true", check=False)
 
-static void init_orig(void) {
-    if (!orig_ioctl) {
-        orig_ioctl = (int (*)(int, unsigned long, ...))dlsym(RTLD_NEXT, "ioctl");
-    }
-    if (!orig_close) {
-        orig_close = (int (*)(int))dlsym(RTLD_NEXT, "close");
-    }
-    if (!orig_write) {
-        orig_write = (ssize_t (*)(int, const void *, size_t))dlsym(RTLD_NEXT, "write");
-    }
-}
+# Configure xsettingsd for global GTK theme propagation
+for xs_dir in ["/home/user/.config/xsettingsd", "/root/.config/xsettingsd"]:
+    os.makedirs(xs_dir, exist_ok=True)
+    with open(f"{xs_dir}/xsettingsd.conf", "w") as f:
+        f.write('Net/ThemeName "Windows-11"\nNet/IconThemeName "Papirus"\nGtk/CursorThemeName "Adwaita"\nGtk/FontName "Segoe UI 10"\nXft/Antialias 1\nXft/Hinting 1\nXft/HintStyle "hintslight"\nXft/RGBA "rgb"\n')
 
-int close(int fd) {
-    init_orig();
-    if (fd >= 0 && fd < MAX_FDS) {
-        is_gamepad_fd[fd] = 0;
-        is_mouse_or_kbd_fd[fd] = 0;
-    }
-    return orig_close(fd);
-}
-
-ssize_t write(int fd, const void *buf, size_t count) {
-    init_orig();
-    if (fd >= 0 && fd < MAX_FDS && buf) {
-        if (count == sizeof(struct uinput_user_dev)) {
-            const struct uinput_user_dev *u = (const struct uinput_user_dev *)buf;
-            if (u->id.vendor == 0x045e || u->id.vendor == 0x054c || u->id.vendor == 0x057e ||
-                strstr(u->name, "Xbox") || strstr(u->name, "Gamepad") || strstr(u->name, "Controller") ||
-                strstr(u->name, "x360") || strstr(u->name, "xone")) {
-                is_gamepad_fd[fd] = 1;
-            } else if (strstr(u->name, "mouse") || strstr(u->name, "keyboard") ||
-                       strstr(u->name, "touch") || strstr(u->name, "tablet") ||
-                       strstr(u->name, "Mouse") || strstr(u->name, "Keyboard")) {
-                is_mouse_or_kbd_fd[fd] = 1;
-            }
-        }
-    }
-    return orig_write(fd, buf, count);
-}
-
-int ioctl(int fd, unsigned long request, ...) {
-    init_orig();
-    va_list args;
-    va_start(args, request);
-    void *argp = va_arg(args, void *);
-    va_end(args);
-
-    if (fd >= 0 && fd < MAX_FDS) {
-        // 1. Check UI_SET_KEYBIT
-        if (request == UI_SET_KEYBIT) {
-            unsigned long key = (unsigned long)argp;
-            if (key == BTN_GAMEPAD || (key >= BTN_SOUTH && key <= BTN_THUMBR) ||
-                (key >= BTN_TRIGGER_HAPPY1 && key <= BTN_TRIGGER_HAPPY40)) {
-                is_gamepad_fd[fd] = 1;
-            }
-            if (key == KEY_A || key == KEY_ENTER || key == KEY_SPACE || key == BTN_LEFT || key == BTN_RIGHT) {
-                is_mouse_or_kbd_fd[fd] = 1;
-            }
-        }
-
-        // 2. Check UI_SET_RELBIT (relative mouse)
-        if (request == UI_SET_RELBIT) {
-            is_mouse_or_kbd_fd[fd] = 1;
-        }
-
-        // 3. Check UI_DEV_SETUP
-        if (request == UI_DEV_SETUP && argp) {
-            const struct uinput_setup *s = (const struct uinput_setup *)argp;
-            if (s->id.vendor == 0x045e || s->id.vendor == 0x054c || s->id.vendor == 0x057e ||
-                strstr(s->name, "Xbox") || strstr(s->name, "Gamepad") || strstr(s->name, "Controller") ||
-                strstr(s->name, "x360") || strstr(s->name, "xone")) {
-                is_gamepad_fd[fd] = 1;
-            } else if (strstr(s->name, "mouse") || strstr(s->name, "keyboard") ||
-                       strstr(s->name, "touch") || strstr(s->name, "tablet") ||
-                       strstr(s->name, "Mouse") || strstr(s->name, "Keyboard")) {
-                is_mouse_or_kbd_fd[fd] = 1;
-            }
-        }
-
-        // 4. Intercept UI_DEV_CREATE
-        if (request == UI_DEV_CREATE) {
-            if (is_gamepad_fd[fd] && !is_mouse_or_kbd_fd[fd]) {
-                fprintf(stderr, "[selective_uinput] >>> ALLOWING Gamepad uinput creation on fd %d\\n", fd);
-                return orig_ioctl(fd, request, argp);
-            } else {
-                fprintf(stderr, "[selective_uinput] >>> BLOCKING Mouse/Keyboard uinput creation on fd %d (forcing XTest fallback)\\n", fd);
-                errno = EPERM;
-                return -1;
-            }
-        }
-    }
-
-    return orig_ioctl(fd, request, argp);
-}
+# Configure Openbox rc.xml
+ob_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<openbox_config xmlns="http://openbox.org/3.4/rc">
+  <theme>
+    <name>Windows-11</name>
+    <titleLayout>NLIMC</titleLayout>
+    <keepBorder>yes</keepBorder>
+    <animateIconify>no</animateIconify>
+    <font place="ActiveWindow">
+      <name>Sans</name>
+      <size>9</size>
+      <weight>Bold</weight>
+    </font>
+  </theme>
+  <desktops>
+    <number>1</number>
+    <names>
+      <name>Desktop</name>
+    </names>
+  </desktops>
+  <keyboard>
+    <keybind key="A-F4">
+      <action name="Close"/>
+    </keybind>
+    <keybind key="W-d">
+      <action name="ToggleShowDesktop"/>
+    </keybind>
+    <keybind key="W-r">
+      <action name="Execute">
+        <command>rofi -show drun</command>
+      </action>
+    </keybind>
+  </keyboard>
+  <mouse>
+    <context name="Root">
+      <mousebind button="Right" action="Press">
+        <action name="ShowMenu"><menu>root-menu</menu></action>
+      </mousebind>
+    </context>
+  </mouse>
+</openbox_config>
 """
-with open("/tmp/selective_uinput.c", "w") as f:
-    f.write(selective_uinput_c)
-run("gcc -O2 -fPIC -shared -o /usr/local/lib/libselective_uinput.so /tmp/selective_uinput.c -ldl 2>/dev/null || true", check=False)
-run("chmod 755 /usr/local/lib/libselective_uinput.so 2>/dev/null || true", check=False)
+for ob_dir in ["/home/user/.config/openbox", "/root/.config/openbox"]:
+    os.makedirs(ob_dir, exist_ok=True)
+    with open(f"{ob_dir}/rc.xml", "w") as f:
+        f.write(ob_xml)
+
+run("chown -R user:user /home/user/.config", check=False)
 
 # -------------------------------------------------------------
 # 4. Hardware EDID & Dynamic PCI Bus ID Xorg Setup
@@ -675,6 +629,7 @@ if desktop_mode == "win11":
             f.write("#!/bin/sh\n"
                     "xset s off -dpms s noblank\n"
                     "xset r rate 250 30\n"
+                    "xsettingsd &\n"
                     f"feh --bg-fill {wallpaper_file} &\n"
                     "pcmanfm --desktop &\n"
                     "picom -b --corner-radius 8 &\n"
@@ -690,6 +645,7 @@ if desktop_mode == "win11":
         'export QT_IM_MODULE=xim; '
         'export XMODIFIERS=@im=none; '
     )
+    run(f'su - user -c "{openbox_env} nohup xsettingsd >/dev/null 2>&1 &"', check=False)
     run(f'su - user -c "{openbox_env} nohup openbox > /home/user/openbox.log 2>&1 &"', check=False)
     run('DISPLAY=:1 xset s off -dpms s noblank >/dev/null 2>&1 || true', check=False)
     run('DISPLAY=:1 xset r rate 250 30 >/dev/null 2>&1 || true', check=False)
@@ -800,10 +756,6 @@ nvenc_realtime_hags = 0
 
 audio_sink = sink-sunshine-stereo
 channels = 2
-
-controller = enabled
-gamepad = x360
-gamepad_driver = uinput
 """
 with open("/root/.config/sunshine/sunshine.conf", "w") as f:
     f.write(sunshine_cfg)
@@ -833,6 +785,9 @@ subprocess.run("cp -rf /root/.config/sunshine/* /home/user/.config/sunshine/", s
 subprocess.run("chown -R user:user /home/user/.config/sunshine", shell=True)
 subprocess.run('su - user -c "sunshine --creds admin Sunshine123!" >/dev/null 2>&1 || true', shell=True)
 
+# Ensure no /dev/uinput exists before Sunshine starts so it uses 100% pure XTest
+subprocess.run("rm -rf /dev/uinput /dev/input /dev/uhid", shell=True)
+
 sunshine_user_cmd = (
     'su - user -c "'
     'export DISPLAY=:1; '
@@ -841,7 +796,7 @@ sunshine_user_cmd = (
     'export GTK_IM_MODULE=xim; '
     'export QT_IM_MODULE=xim; '
     'export XMODIFIERS=@im=none; '
-    'export LD_PRELOAD=/usr/local/lib/libselective_uinput.so; '
+    'unset LD_PRELOAD; '
     'nohup sunshine > /home/user/sunshine.log 2>&1 &"'
 )
 subprocess.run(sunshine_user_cmd, shell=True)
