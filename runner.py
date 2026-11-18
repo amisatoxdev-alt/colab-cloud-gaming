@@ -96,13 +96,28 @@ def setup_environment():
     else:
         log_ok("Production stack successfully deployed.")
 
-def get_links():
-    log_step("3/3", "Extracting active service tunnels and mesh addresses...")
+def get_links(verbose=False):
+    if verbose:
+        log_step("3/3", "Extracting active service tunnels and mesh addresses...")
     res = run_cmd(f"colab exec -s {SESSION_NAME} -f read_links.py", capture=True)
+    out = res.stdout.strip()
     try:
-        data = json.loads(res.stdout.strip())
+        data = json.loads(out)
         return data
     except Exception:
+        for line in reversed(out.splitlines()):
+            line = line.strip()
+            if line.startswith("{") and line.endswith("}"):
+                try:
+                    return json.loads(line)
+                except Exception:
+                    pass
+        m = re.findall(r'\{[^{}]*"(?:sunshine_url|moonlight_url)"[^{}]*\}', out, re.DOTALL)
+        if m:
+            try:
+                return json.loads(m[-1])
+            except Exception:
+                pass
         return {}
 
 def check_and_wait_tailscale(ts_login_url):
@@ -140,14 +155,12 @@ def check_and_wait_tailscale(ts_login_url):
         print(f"\n{C_YELLOW}[!] Tailscale wait timed out.{C_RESET}")
     return None
 
-def make_card_row(label, val, val_color=C_WHITE, max_len=49):
+def make_card_row(label, val, val_color=C_WHITE, max_len=62):
     val_str = str(val)[:max_len]
     return f"{C_CYAN}│  {C_YELLOW}{label:<22}{C_CYAN}: {val_color}{val_str:<{max_len}}{C_CYAN}│{C_RESET}"
 
 def print_dashboard(links, ts_ip=None):
     desktop_url = links.get('desktop_url', '')
-    if desktop_url and "vnc.html" not in desktop_url:
-        desktop_url = desktop_url.rstrip('/') + '/vnc.html?autoconnect=true&resize=remote'
 
     ts_display = ts_ip if ts_ip else links.get('tailscale_ip', 'Not Linked')
     if ts_display and ts_display != "127.0.0.1" and ts_display != "Not Linked":
@@ -155,17 +168,29 @@ def print_dashboard(links, ts_ip=None):
     else:
         sunshine_ts = "Enable via /tailscale"
 
+    w_val = 62
+    w_label = 22
+    total_inner = 2 + w_label + 2 + w_val  # 88
+    top = f"{C_CYAN}╭" + "─" * total_inner + f"╮{C_RESET}"
+    sep = f"{C_CYAN}├" + "─" * total_inner + f"┤{C_RESET}"
+    bot = f"{C_CYAN}╰" + "─" * total_inner + f"╯{C_RESET}"
+    title = "🎮 ACTIVE CLOUD GAMING ENDPOINTS 🎮"
+    visual_len = len(title) + 2
+    pad_left = (total_inner - visual_len) // 2
+    pad_right = total_inner - visual_len - pad_left
+    header = f"{C_CYAN}│" + " " * pad_left + f"{C_WHITE}{C_BOLD}" + title + f"{C_CYAN}" + " " * pad_right + f"│{C_RESET}"
+
     lines = [
-        f"\n{C_CYAN}╭───────────────────────────────────────────────────────────────────────────╮",
-        f"│                     {C_WHITE}{C_BOLD}🎮 ACTIVE CLOUD GAMING ENDPOINTS 🎮{C_CYAN}                   │",
-        f"├───────────────────────────────────────────────────────────────────────────┤",
+        f"\n{top}",
+        header,
+        sep,
         make_card_row("Moonlight Host IP", ts_display, C_GREEN + C_BOLD),
         make_card_row("Direct Sunshine URL", sunshine_ts, C_WHITE),
         make_card_row("Public Sunshine WebUI", links.get('sunshine_url', 'Pending'), C_WHITE),
         make_card_row("Sunshine Credentials", links.get('sunshine_creds', 'admin / Sunshine123!'), C_WHITE),
         make_card_row("Interactive Desktop", desktop_url, C_WHITE),
         make_card_row("Moonlight Web Client", links.get('moonlight_url', 'Pending'), C_WHITE),
-        f"{C_CYAN}╰───────────────────────────────────────────────────────────────────────────╯{C_RESET}\n"
+        bot + "\n"
     ]
     print("\n".join(lines))
 
@@ -230,21 +255,36 @@ else:
         print(f"    {C_YELLOW}💡 Tip:{C_RESET} {C_WHITE}Ensure Sunshine WebUI is reachable and enter the PIN manually if required: {C_CYAN}{latest_links.get('sunshine_url', '')}/pin{C_RESET}")
 
 def show_cflinks():
+    global latest_links
+    fresh = get_links(verbose=False)
+    if fresh:
+        latest_links.update(fresh)
+
     sunshine_url = latest_links.get('sunshine_url', 'Pending')
     moonlight_url = latest_links.get('moonlight_url', 'Pending')
     desktop_url = latest_links.get('desktop_url', '')
-    if desktop_url and "vnc.html" not in desktop_url:
-        desktop_url = desktop_url.rstrip('/') + '/vnc.html?autoconnect=true&resize=remote'
+
+    w_val = 62
+    w_label = 22
+    total_inner = 2 + w_label + 2 + w_val  # 88
+    top = f"{C_CYAN}╭" + "─" * total_inner + f"╮{C_RESET}"
+    sep = f"{C_CYAN}├" + "─" * total_inner + f"┤{C_RESET}"
+    bot = f"{C_CYAN}╰" + "─" * total_inner + f"╯{C_RESET}"
+    title = "🌐 ACTIVE CLOUDFLARE PUBLIC TUNNELS 🌐"
+    visual_len = len(title) + 2
+    pad_left = (total_inner - visual_len) // 2
+    pad_right = total_inner - visual_len - pad_left
+    header = f"{C_CYAN}│" + " " * pad_left + f"{C_WHITE}{C_BOLD}" + title + f"{C_CYAN}" + " " * pad_right + f"│{C_RESET}"
 
     lines = [
-        f"\n{C_CYAN}╭───────────────────────────────────────────────────────────────────────────╮",
-        f"│                   {C_WHITE}{C_BOLD}🌐 ACTIVE CLOUDFLARE PUBLIC TUNNELS 🌐{C_CYAN}                  │",
-        f"├───────────────────────────────────────────────────────────────────────────┤",
+        f"\n{top}",
+        header,
+        sep,
         make_card_row("Sunshine WebUI (PIN)", sunshine_url, C_WHITE),
         make_card_row("Moonlight Web Client", moonlight_url, C_WHITE),
         make_card_row("Interactive Desktop", desktop_url, C_WHITE),
         make_card_row("Web Credentials", "admin / Sunshine123!", C_GREEN),
-        f"{C_CYAN}╰───────────────────────────────────────────────────────────────────────────╯{C_RESET}\n"
+        bot + "\n"
     ]
     print("\n".join(lines))
 
@@ -457,7 +497,7 @@ def main():
     
     ensure_session()
     setup_environment()
-    latest_links = get_links()
+    latest_links = get_links(verbose=True)
 
     # Tailscale interactive prompt
     print(f"\n{C_CYAN}[?]{C_RESET} {C_WHITE}Tailscale provides direct, encrypted, jitter-free 60FPS streaming (~80-110ms).{C_RESET}")
@@ -512,6 +552,9 @@ def main():
             elif cmd in ["/unfreeze", "/fix", "unfreeze", "fix"]:
                 unfreeze_input()
             elif cmd in ["/links", "links", "/urls"]:
+                fresh = get_links(verbose=False)
+                if fresh:
+                    latest_links.update(fresh)
                 print_dashboard(latest_links, ts_ip)
             elif cmd in ["/status", "status"]:
                 show_status()
