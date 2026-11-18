@@ -632,6 +632,13 @@ def main():
             log_step("TS", f"Synchronizing Sunshine with active Tailscale IP: {ts_ip}...")
             run_cmd(f"colab exec -s {SESSION_NAME} -f sync_ts_ip.py", capture=True)
             log_ok("Sunshine configuration synced with Tailscale.")
+
+            # Tailscale is now authorized -> publish the funnel and issue the web PIN
+            log_step("WEB", "Publishing MoonlightWeb via Tailscale Funnel...")
+            fn_url = setup_funnel()
+            if fn_url:
+                latest_links['funnel_url'] = fn_url
+            show_pin(new=True)
     else:
         print(f"      {C_GRAY}Tailscale skipped. MoonlightWeb will only be reachable locally.{C_RESET}")
 

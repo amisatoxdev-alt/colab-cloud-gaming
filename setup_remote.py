@@ -687,7 +687,7 @@ ts_ip = subprocess.run("tailscale ip -4 2>/dev/null || true", shell=True, text=T
 if not ts_ip or " " in ts_ip:
     ts_ip = "127.0.0.1"
 
-# 5.6 MoonlightWeb (official moonlightweb.top client) + Tailscale Funnel
+# 5.6 MoonlightWeb (official moonlightweb.top client) - started early, published later
 log("Starting MoonlightWeb web streaming server on port 8090...")
 mw_env = env.copy()
 mw_env["MW_SERVICE"] = "1"
@@ -695,16 +695,32 @@ spawn_daemon(["/opt/moonlightweb/bin/MoonlightWeb", "--port", "8090", "--autosta
              "moonlightweb.log", env_override=mw_env)
 time.sleep(4)
 
-# 5.7 Tailscale Funnel (public HTTPS, replaces Cloudflare tunnels entirely)
+# 5.7 Tailscale login (must happen BEFORE Funnel can be published)
+log("Bringing Tailscale up and waiting for node authorization...")
+ts_res = subprocess.run("tailscale up --operator=root --reset --accept-dns=false --timeout=25s",
+                        shell=True, text=True, capture_output=True)
+ts_match = re.search(r'https://login\.tailscale\.com/a/[a-zA-Z0-9]+', ts_res.stdout + ts_res.stderr)
+tailscale_url = ts_match.group(0) if ts_match else "Check 'tailscale status'"
+
+# Re-resolve node IP now that the node may be authenticated
+ts_ip_live = subprocess.run("tailscale ip -4 2>/dev/null || true", shell=True, text=True, capture_output=True).stdout.strip()
+if ts_ip_live and " " not in ts_ip_live and not ts_ip_live.startswith("100.64."):
+    pass
+if ts_ip_live and " " not in ts_ip_live:
+    ts_ip = ts_ip_live
+
+# 5.8 Tailscale Funnel (public HTTPS endpoint, replaces Cloudflare tunnels entirely)
 log("Publishing MoonlightWeb through Tailscale Funnel...")
+subprocess.run("mkdir -p /var/log/tunnels", shell=True)
 subprocess.run("tailscale funnel --bg --yes 8090 > /var/log/tunnels/funnel.log 2>&1", shell=True)
+time.sleep(3)
 
 funnel_url = ""
 try:
     f_stat = subprocess.run("tailscale funnel status 2>&1", shell=True, text=True, capture_output=True).stdout
     m = re.search(r'https://[A-Za-z0-9.\-]+\.ts\.net', f_stat)
     if m:
-        funnel_url = m.group(0)
+        funnel_url = m.group(0).rstrip("/")
     else:
         s_raw = subprocess.run("tailscale status --json 2>/dev/null", shell=True, text=True, capture_output=True).stdout
         dns_name = json.loads(s_raw).get("Self", {}).get("DNSName", "").rstrip(".")
@@ -713,7 +729,7 @@ try:
 except Exception:
     pass
 
-# 5.7b Generate the one-time Access PIN for remote browsers (single-use per device)
+# 5.9 Generate the one-time Access PIN for remote browsers (single-use per device)
 def mw_access_pin(generate_new=False):
     bin_path = "/opt/moonlightweb/bin/MoonlightWeb"
     flag = "--new-pin" if generate_new else "--status"
@@ -722,8 +738,9 @@ def mw_access_pin(generate_new=False):
     return pm.group(1) if pm else ""
 
 moonlight_pin = mw_access_pin(generate_new=True) or mw_access_pin(False)
+log(f"MoonlightWeb Access PIN ready: {moonlight_pin or 'PENDING (run /pin)'}")
 
-# 5.8 Sunshine Configuration
+# 5.10 Sunshine Configuration
 allowed_origins = [
     "https://localhost:47990",
     "https://127.0.0.1:47990",
@@ -804,9 +821,34 @@ sunshine_user_cmd = (
 )
 subprocess.run(sunshine_user_cmd, shell=True)
 
-ts_res = subprocess.run("tailscale up --operator=root --reset --accept-dns=false --timeout=15s", shell=True, text=True, capture_output=True)
-ts_match = re.search(r'https://login\.tailscale\.com/a/[a-zA-Z0-9]+', ts_res.stdout)
-tailscale_url = ts_match.group(0) if ts_match else "Check 'tailscale status'"
+# -------------------------------------------------------------
+# 6. Final Publish Pass (Funnel + PIN) - guaranteed after Tailscale is up
+# -------------------------------------------------------------
+log("Final pass: publishing Funnel and issuing the web access PIN...")
+subprocess.run("tailscale funnel --bg --yes 8090 > /var/log/tunnels/funnel.log 2>&1", shell=True)
+time.sleep(2)
+
+try:
+    f_stat = subprocess.run("tailscale funnel status 2>&1", shell=True, text=True, capture_output=True).stdout
+    m = re.search(r'https://[A-Za-z0-9.\-]+\.ts\.net', f_stat)
+    if m:
+        funnel_url = m.group(0).rstrip("/")
+    elif not funnel_url:
+        s_raw = subprocess.run("tailscale status --json 2>/dev/null", shell=True, text=True, capture_output=True).stdout
+        dns_name = json.loads(s_raw).get("Self", {}).get("DNSName", "").rstrip(".")
+        if dns_name:
+            funnel_url = f"https://{dns_name}"
+except Exception:
+    pass
+
+# Always mint a brand-new single-use PIN at the end of setup
+fresh_pin = mw_access_pin(generate_new=True) or mw_access_pin(False)
+if fresh_pin:
+    moonlight_pin = fresh_pin
+
+ts_ip_live = subprocess.run("tailscale ip -4 2>/dev/null || true", shell=True, text=True, capture_output=True).stdout.strip()
+if ts_ip_live and " " not in ts_ip_live:
+    ts_ip = ts_ip_live
 
 links = {
     "funnel_url": f"{funnel_url}/" if funnel_url else "Run /funnel to publish",
@@ -822,4 +864,6 @@ with open("/var/log/services/links.json", "w") as f:
 with open("/tmp/links.json", "w") as f:
     json.dump(links, f, indent=2)
 
+log(f"Funnel URL: {links['funnel_url']}")
+log(f"Web Access PIN: {moonlight_pin or 'run /pin to generate'}")
 log("Deployment complete and all daemons initialized successfully.")
