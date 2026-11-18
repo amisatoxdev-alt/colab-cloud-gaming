@@ -68,7 +68,7 @@ for key, val in [
 # User permissions
 run("id -u user >/dev/null 2>&1 || (useradd -m -s /bin/bash user && echo 'user:123456' | chpasswd)", check=False)
 run("usermod -aG sudo,video,audio user", check=False)
-run("rm -f /dev/uinput /dev/uhid", check=False)
+run("rm -rf /dev/input /dev/uinput /dev/uhid", check=False)
 run("mkdir -p /run/user/1001/pulse && chown -R user:user /run/user/1001 && chmod 700 /run/user/1001", check=False)
 
 # Pre-accept Steam license and pre-configure Steam to avoid modal dialogs
@@ -423,7 +423,7 @@ apps_cfg = {
         {"name": "Desktop (1366x768 WXGA)", "cmd": "xrandr --output DVI-D-0 --mode 1360x768", "image-path": "", "auto-detach": "true"},
         {"name": "Desktop (1280x720 HD)", "cmd": "xrandr --output DVI-D-0 --mode 1280x720", "image-path": "", "auto-detach": "true"},
         {"name": "Google Chrome (WebGPU & 3D)", "cmd": f"/usr/bin/google-chrome-stable {gpu_flags} https://webgpu.github.io/webgpu-samples/", "image-path": ""},
-        {"name": "Steam", "cmd": "steam -silent -gamepadui", "image-path": ""},
+        {"name": "Steam", "cmd": "steam -silent", "image-path": ""},
         {"name": "Vulkan 3D Test (vkcube)", "cmd": "vkcube", "image-path": ""},
         {"name": "OpenGL 3D Test (glxgears)", "cmd": "glxgears -info", "image-path": ""}
     ]
