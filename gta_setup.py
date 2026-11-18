@@ -66,16 +66,67 @@ LOG_DIR = "/var/log/services"
 
 
 def log(msg):
-    print(f"[*] {msg}", flush=True)
+    """Print AND append to the log file.
+
+    `/gtav log` tails /var/log/services/gta_setup.log, so every line has to land
+    there as well as on the console -- otherwise watching progress is
+    impossible once the console scrolls away.
+    """
+    line = f"[*] {msg}"
+    print(line, flush=True)
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        with open(f"{LOG_DIR}/gta_setup.log", "a") as lf:
+            lf.write(line + "\n")
+    except OSError:
+        pass
 
 
-def sh(cmd, check=False, timeout=None):
-    res = subprocess.run(
-        cmd, shell=True, text=True, capture_output=True, timeout=timeout
-    )
-    if check and res.returncode != 0:
-        print(f"[!] '{cmd[:90]}' rc={res.returncode}\n{res.stdout[-800:]}"
-              f"{res.stderr[-800:]}", flush=True)
+def sh(cmd, check=False, timeout=None, label=None, heartbeat=15):
+    """Run a shell command WITHOUT holding its pipes.
+
+    The previous version used capture_output=True. On a long apt run that is a
+    silent trap in two ways: (1) nothing reaches the kernel for minutes, so the
+    Colab CLI's idle timeout abandons a healthy install, and (2) a full pipe
+    buffer can deadlock the child. Both are fatal here, so output goes to a log
+    file and we print a heartbeat while waiting.
+    """
+    os.makedirs(LOG_DIR, exist_ok=True)
+    tag = label or (cmd[:48].replace(" ", "_").replace("/", "-"))
+    log_path = f"{LOG_DIR}/gta_step.log"
+    with open(log_path, "w") as lf:
+        proc = subprocess.Popen(
+            cmd, shell=True, stdout=lf, stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL, start_new_session=True,
+        )
+        started = time.time()
+        next_beat = started + heartbeat
+        while True:
+            rc = proc.poll()
+            if rc is not None:
+                break
+            now = time.time()
+            if timeout and now - started > timeout:
+                proc.kill()
+                log(f"STEP TIMEOUT after {int(now - started)}s: {label or tag}")
+                rc = -9
+                break
+            if now >= next_beat:
+                log(f"still working: {label or tag} "
+                    f"({int(now - started)}s elapsed)")
+                next_beat = now + heartbeat
+            time.sleep(0.5)
+
+    tail = ""
+    try:
+        with open(log_path, "r", errors="replace") as lf:
+            tail = lf.read()[-4000:]
+    except OSError:
+        pass
+    res = subprocess.CompletedProcess(cmd, rc, tail, "")
+    if check and rc != 0:
+        log(f"[!] '{cmd[:90]}' rc={rc}")
+        print(tail[-1200:], flush=True)
     return res
 
 
@@ -96,8 +147,10 @@ def want(step):
 # --------------------------------------------------------------------------
 def install_wine():
     log("Installing Wine + Vulkan userspace (this takes a few minutes)...")
-    sh("export DEBIAN_FRONTEND=noninteractive; dpkg --add-architecture i386")
-    sh("export DEBIAN_FRONTEND=noninteractive; apt-get update -qq", timeout=600)
+    sh("export DEBIAN_FRONTEND=noninteractive; dpkg --add-architecture i386",
+       label="wine: add i386 arch")
+    sh("export DEBIAN_FRONTEND=noninteractive; apt-get update -qq",
+       timeout=900, label="wine: apt-get update")
     pkgs = (
         "wine wine64 wine32:i386 cabextract winbind "
         "libvulkan1 libvulkan1:i386 vulkan-tools "
@@ -107,7 +160,7 @@ def install_wine():
     r = sh(
         f"export DEBIAN_FRONTEND=noninteractive; "
         f"apt-get install -y -qq --no-install-recommends {pkgs}",
-        timeout=1800,
+        timeout=2400, label="wine: apt-get install (large, be patient)",
     )
     log(f"apt rc={r.returncode}")
     v = sh("wine --version").stdout.strip()

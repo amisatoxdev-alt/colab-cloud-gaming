@@ -478,51 +478,75 @@ for xs_dir in ["/home/user/.config/xsettingsd", "/root/.config/xsettingsd"]:
         f.write('Net/ThemeName "Windows-11"\nNet/IconThemeName "Papirus"\nGtk/CursorThemeName "Adwaita"\nGtk/FontName "Segoe UI 10"\nXft/Antialias 1\nXft/Hinting 1\nXft/HintStyle "hintslight"\nXft/RGBA "rgb"\n')
 
 # Configure Openbox rc.xml
-ob_xml = """<?xml version="1.0" encoding="UTF-8"?>
-<openbox_config xmlns="http://openbox.org/3.4/rc">
-  <theme>
-    <name>Windows-11</name>
-    <titleLayout>NLIMC</titleLayout>
-    <keepBorder>yes</keepBorder>
-    <animateIconify>no</animateIconify>
-    <font place="ActiveWindow">
-      <name>Sans</name>
-      <size>9</size>
-      <weight>Bold</weight>
-    </font>
-  </theme>
-  <desktops>
-    <number>1</number>
-    <names>
-      <name>Desktop</name>
-    </names>
-  </desktops>
-  <keyboard>
-    <keybind key="A-F4">
-      <action name="Close"/>
-    </keybind>
-    <keybind key="W-d">
-      <action name="ToggleShowDesktop"/>
-    </keybind>
-    <keybind key="W-r">
-      <action name="Execute">
-        <command>rofi -show drun</command>
-      </action>
-    </keybind>
-  </keyboard>
-  <mouse>
-    <context name="Root">
-      <mousebind button="Right" action="Press">
-        <action name="ShowMenu"><menu>root-menu</menu></action>
-      </mousebind>
-    </context>
-  </mouse>
-</openbox_config>
-"""
-for ob_dir in ["/home/user/.config/openbox", "/root/.config/openbox"]:
-    os.makedirs(ob_dir, exist_ok=True)
-    with open(f"{ob_dir}/rc.xml", "w") as f:
-        f.write(ob_xml)
+# ---------------------------------------------------------------------------
+# NEVER hand-write a minimal rc.xml. A config whose <mouse> section holds only
+# the "Root" context binds NOTHING to the title bar: the buttons still render
+# (they come from <titleLayout> + themerc artwork) but no click is ever handled,
+# so close / iconify / maximize are completely dead. That was the real bug.
+#
+# Instead we take the distribution rc.xml -- which carries all 19 mouse
+# contexts (Frame, Titlebar, Titlebar Top Right Bottom Left ..., Client, Close,
+# Iconify, Maximize, Desktop, Root, MoveResize) -- and override only what we
+# actually want: the theme name, the title layout, and our keybinds.
+OB_THEME = "Windows-11"
+OB_TITLE_LAYOUT = "NLIMC"
+
+def build_openbox_rc():
+    base = None
+    for cand in ("/etc/xdg/openbox/rc.xml", "/usr/share/openbox/rc.xml"):
+        if not os.path.exists(cand):
+            continue
+        try:
+            text = open(cand, encoding="utf-8", errors="replace").read()
+        except OSError:
+            continue
+        if "<openbox_config" in text:
+            base = text
+            break
+    if not base:
+        return None
+
+    # Theme name: only the <name> inside <theme>, not one of the <font> names.
+    base = re.sub(r"(<theme>.*?<name>)[^<]*(</name>)",
+                  lambda m: m.group(1) + OB_THEME + m.group(2),
+                  base, count=1, flags=re.S)
+    # Title layout: icon | label | iconify | maximize | close
+    if "<titleLayout>" in base:
+        base = re.sub(r"<titleLayout>[^<]*</titleLayout>",
+                      f"<titleLayout>{OB_TITLE_LAYOUT}</titleLayout>", base, count=1)
+    else:
+        base = base.replace("</theme>",
+                            f"  <titleLayout>{OB_TITLE_LAYOUT}</titleLayout>\n  </theme>", 1)
+
+    # Windows-like shortcuts, appended only when the distro does not ship them.
+    kb_extra = ""
+    if '"W-d"' not in base:
+        kb_extra += ('    <keybind key="W-d">\n'
+                     '      <action name="ToggleShowDesktop"/>\n'
+                     '    </keybind>\n')
+    if '"W-r"' not in base:
+        kb_extra += ('    <keybind key="W-r">\n'
+                     '      <action name="Execute">\n'
+                     '        <command>rofi -show drun</command>\n'
+                     '      </action>\n'
+                     '    </keybind>\n')
+    if kb_extra:
+        if "</keyboard>" in base:
+            base = base.replace("</keyboard>", kb_extra + "  </keyboard>", 1)
+        else:
+            base = base.replace("</openbox_config>",
+                                "  <keyboard>\n" + kb_extra + "  </keyboard>\n</openbox_config>", 1)
+    return base
+
+ob_xml = build_openbox_rc()
+if ob_xml:
+    for ob_dir in ["/home/user/.config/openbox", "/root/.config/openbox"]:
+        os.makedirs(ob_dir, exist_ok=True)
+        with open(f"{ob_dir}/rc.xml", "w") as f:
+            f.write(ob_xml)
+    log("Openbox rc.xml derived from distro default (all mouse contexts intact).")
+else:
+    log("WARNING: no distribution openbox rc.xml found - leaving openbox defaults.")
 
 run("chown -R user:user /home/user/.config", check=False)
 
@@ -618,7 +642,28 @@ def spawn_daemon(args, log_name, env_override=None, cwd=None):
 spawn_daemon(["/usr/lib/xorg/Xorg", ":1", "-allowMouseOpenFail", "-novtswitch", "-nolisten", "tcp"], "xorg.log")
 time.sleep(2)
 run("DISPLAY=:1 xhost + >/dev/null 2>&1 || true", check=False)
-run("DISPLAY=:1 xrandr --output DVI-D-0 --mode 1920x1080 >/dev/null 2>&1 || true", check=False)
+# --- Desktop resolution ----------------------------------------------------
+# Candidate modes in preference order. "1366x768" is what people ask for, but
+# this EDID has no 1366x768 entry -- the true 16:9 mode is 1368x768 (and
+# 1360x768 on some panels). Trying a mode the EDID does not list silently fails,
+# leaving the screen at whatever Xorg picked, so probe before applying.
+DESKTOP_RES_CANDIDATES = [os.environ.get("DESKTOP_RES", ""), "1368x768",
+                          "1360x768", "1920x1080", "1280x720"]
+DESKTOP_RES = "1920x1080"
+try:
+    _modes_out = subprocess.run("DISPLAY=:1 xrandr --query", shell=True, text=True,
+                                capture_output=True).stdout
+    for _cand in DESKTOP_RES_CANDIDATES:
+        if _cand and _cand in _modes_out:
+            DESKTOP_RES = _cand
+            break
+    run(f"DISPLAY=:1 xrandr --output DVI-D-0 --mode {DESKTOP_RES} >/dev/null 2>&1 || true",
+        check=False)
+    _dims = subprocess.run("DISPLAY=:1 xdpyinfo 2>/dev/null | grep -m1 dimensions",
+                           shell=True, text=True, capture_output=True).stdout.strip()
+    log(f"Desktop resolution: {DESKTOP_RES} ({_dims or 'unverified'})")
+except Exception as _exc:
+    log(f"Resolution setup skipped: {_exc}")
 
 # 5.2 Low-Latency PulseAudio under user
 run('su - user -c "export XDG_RUNTIME_DIR=/run/user/1001; pulseaudio --kill 2>/dev/null || true"', check=False)
@@ -644,6 +689,7 @@ if desktop_mode == "win11":
             f.write("#!/bin/sh\n"
                     "xset s off -dpms s noblank\n"
                     "xset r rate 250 30\n"
+                    f"xrandr --output DVI-D-0 --mode {DESKTOP_RES}\n"
                     "xsettingsd &\n"
                     f"feh --bg-fill {wallpaper_file} &\n"
                     "pcmanfm --desktop &\n"
@@ -677,6 +723,7 @@ else:
             f.write("#!/bin/sh\n"
                     "xset s off -dpms s noblank\n"
                     "xset r rate 250 30\n"
+                    f"xrandr --output DVI-D-0 --mode {DESKTOP_RES}\n"
                     f"feh --bg-fill {wallpaper_file} &\n")
         run(f"chmod +x {ob_dir}/autostart", check=False)
     run("chown -R user:user /home/user/.config/openbox", check=False)
@@ -819,8 +866,9 @@ desktop_title = "Windows 11 Desktop" if desktop_mode == "win11" else "Game Mode 
 apps_cfg = {
     "env": {"PATH": "$(PATH):/usr/games:/usr/lib/games"},
     "apps": [
+        {"name": f"{desktop_title} ({DESKTOP_RES} native)", "cmd": f"xrandr --output DVI-D-0 --mode {DESKTOP_RES}", "image-path": "", "auto-detach": "true"},
         {"name": f"{desktop_title} (1920x1080 FHD)", "cmd": "xrandr --output DVI-D-0 --mode 1920x1080", "image-path": "", "auto-detach": "true"},
-        {"name": f"{desktop_title} (1366x768 WXGA)", "cmd": "xrandr --output DVI-D-0 --mode 1360x768", "image-path": "", "auto-detach": "true"},
+        {"name": f"{desktop_title} (1368x768 WXGA)", "cmd": "xrandr --output DVI-D-0 --mode 1368x768", "image-path": "", "auto-detach": "true"},
         {"name": f"{desktop_title} (1280x720 HD)", "cmd": "xrandr --output DVI-D-0 --mode 1280x720", "image-path": "", "auto-detach": "true"},
         {"name": "Google Chrome (WebGPU & 3D)", "cmd": f"/usr/bin/google-chrome-stable {gpu_flags} https://webgpu.github.io/webgpu-samples/", "image-path": ""},
         {"name": "Steam", "cmd": "steam -silent", "image-path": ""},

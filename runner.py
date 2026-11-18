@@ -367,10 +367,15 @@ def install_gta_v():
     log_step("4/4", "Installing GTA V (Wine + DXVK + Steam shortcut)...")
     print(f"      {C_GRAY}Downloading ~13.7 GB, extracting ~15 GB, then registering in Steam.{C_RESET}", flush=True)
     print(f"      {C_GRAY}This runs detached - watch progress with /gtav log.{C_RESET}", flush=True)
+    # Held inside run_exec, which holds EXEC_LOCK for the whole call -- so the
+    # keep-alive pulse sees the lock taken and skips, and no second exec can
+    # race this one on the single kernel. The idle window is wide because the
+    # download/extract stages are long, and gta_setup.py now prints a 15 s
+    # heartbeat so the idle timer is never starved.
     res = run_exec("--env GTA_STEP=all -f gta_setup.py", capture=False,
-                   idle_timeout=120, hard_timeout=3600, retry_on_timeout=False)
+                   idle_timeout=600, hard_timeout=None, retry_on_timeout=False)
     if res.returncode != 0:
-        log_warn("GTA V install returned non-zero. Check /var/log/services/gta_setup.log")
+        log_warn("GTA V install returned non-zero. Check /gtav log")
     else:
         log_ok("GTA V installed and added to Steam.")
 
