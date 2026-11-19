@@ -66,6 +66,11 @@ if os.path.exists("/tmp/desktop_mode.txt"):
         desktop_mode = open("/tmp/desktop_mode.txt").read().strip().lower()
     except Exception:
         pass
+try:
+    with open("/tmp/desktop_mode.txt", "w") as f:
+        f.write(desktop_mode)
+except Exception:
+    pass
 
 log(f"Starting background downloads (Desktop Mode: {desktop_mode.upper()})...")
 DOWNLOADS = {

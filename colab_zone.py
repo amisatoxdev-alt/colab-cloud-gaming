@@ -21,10 +21,9 @@ Output (single JSON line on stdout):
     {"name","endpoint","zone","family","url"}   empty strings when unknown
 """
 import json
+import os
 import re
 import sys
-
-from colab_cli.common import state
 
 DEFAULT_NAME = "t4"
 
@@ -55,26 +54,46 @@ def family_of_zone(zone):
 def main():
     name = _arg("--name", DEFAULT_NAME)
     endpoint = url = zone = ""
-    sessions, assignments = {}, []
-    try:
-        sessions, assignments = state.sync_sessions()
-    except (Exception, SystemExit):
-        pass
 
-    s = sessions.get(name)
-    if s:
-        endpoint, url = s.endpoint, s.url
-        m = ZONE_IN_URL.search(url or "")
-        if m:
-            zone = m.group(1)
+    # Fast path: check local store directly from disk (0.001s, no network call or timeout risk)
+    sessions_path = os.path.expanduser("~/.config/colab-cli/sessions.json")
+    if os.path.exists(sessions_path):
+        try:
+            with open(sessions_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                entry = data.get(name)
+                if entry and isinstance(entry, dict) and entry.get("endpoint"):
+                    endpoint = entry.get("endpoint", "")
+                    url = entry.get("url", "")
+                    m = ZONE_IN_URL.search(url or "")
+                    if m:
+                        zone = m.group(1)
+        except Exception:
+            pass
 
-    if not zone and assignments:
-        a = next((x for x in assignments if x.endpoint == endpoint), assignments[0])
-        endpoint = a.endpoint
-        url = url or a.runtime_proxy_info.url
-        m = ZONE_IN_URL.search(url or "")
-        if m:
-            zone = m.group(1)
+    # Fallback to network sync only if not in the local sessions store
+    if not zone or not endpoint:
+        sessions, assignments = {}, []
+        try:
+            from colab_cli.common import state
+            sessions, assignments = state.sync_sessions()
+        except (Exception, SystemExit):
+            pass
+
+        s = sessions.get(name)
+        if s:
+            endpoint, url = s.endpoint, s.url
+            m = ZONE_IN_URL.search(url or "")
+            if m:
+                zone = m.group(1)
+
+        if not zone and assignments:
+            a = next((x for x in assignments if x.endpoint == endpoint), assignments[0])
+            endpoint = a.endpoint
+            url = url or a.runtime_proxy_info.url
+            m = ZONE_IN_URL.search(url or "")
+            if m:
+                zone = m.group(1)
 
     print(json.dumps({
         "name": name,

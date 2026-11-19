@@ -283,10 +283,13 @@ def run_exec(args, capture=True, idle_timeout=180, hard_timeout=EXEC_HARD_TIMEOU
 
     with EXEC_LOCK:
         r = run_cmd(cmd, capture=capture, timeout=hard_timeout)
-        if r.returncode == 124 and retry_on_timeout:
-            log_warn("The session kernel stopped responding — restarting it "
+        err_out = (r.stderr or "") + (r.stdout or "")
+        conn_lost = "Connection was lost" in err_out or "connection_ready" in err_out
+        if (r.returncode == 124 or conn_lost) and retry_on_timeout:
+            log_warn("The session kernel disconnected or stopped responding — restarting it "
                      "and retrying once...")
             if _reset_kernel():
+                time.sleep(2)
                 r = run_cmd(cmd, capture=capture, timeout=hard_timeout)
         return r
 
@@ -735,15 +738,19 @@ def setup_environment(desktop_mode="minimal"):
         log_err("No addressable session to deploy onto — aborting before wasting a cycle.")
         sys.exit(1)
 
-    # Store desktop mode in remote /tmp/desktop_mode.txt
-    set_mode_cmd = f"python3 -c \\\"open('/tmp/desktop_mode.txt', 'w').write('{desktop_mode}')\\\""
-    run_exec(f'"{set_mode_cmd}"', idle_timeout=20)
-
     print(f"      {C_GRAY}Executing parallel automated deployment on remote instance...{C_RESET}", flush=True)
     res = run_exec("--env DESKTOP_MODE=%s -f setup_remote.py" % desktop_mode,
                    capture=False, idle_timeout=900, hard_timeout=None, retry_on_timeout=False)
     if res.returncode != 0:
-        log_warn("Deployment returned non-zero code. Verifying active services...")
+        log_warn("Deployment returned non-zero code or connection dropped. Resetting kernel and retrying...")
+        _reset_kernel()
+        time.sleep(3)
+        res = run_exec("--env DESKTOP_MODE=%s -f setup_remote.py" % desktop_mode,
+                       capture=False, idle_timeout=900, hard_timeout=None, retry_on_timeout=False)
+        if res.returncode != 0:
+            log_warn("Deployment retry returned non-zero code. Verifying active services...")
+        else:
+            log_ok("Production stack successfully deployed.")
     else:
         log_ok("Production stack successfully deployed.")
 
