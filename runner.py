@@ -1210,6 +1210,7 @@ def show_help():
         ("/adopt", "Attach a live VM registered under another name"),
         ("/kernel", "Reset a wedged remote kernel (fixes a frozen console)"),
         ("/free", f"Release every assignment except '{SESSION_NAME}'"),
+        ("/logout", "Log out of Google Colab & clear cached account tokens"),
         ("/help", "Show this list of commands"),
         ("/exit", "Stop keep-alive and exit launcher"),
     ]
@@ -1440,6 +1441,17 @@ def main():
                     log_ok("No stale assignments remain.")
                 else:
                     log_warn("Some assignments could not be released.")
+            elif cmd in ["/logout", "logout"]:
+                log_step("LOGOUT", "Starting Colab account logout...")
+                try:
+                    import logout_colab
+                    rc = logout_colab.logout(force=False, stop_sessions=False)
+                    if rc == 0:
+                        print(f"      {C_GRAY}Shutting down launcher orchestrator...{C_RESET}")
+                        stop_event.set()
+                        break
+                except Exception as e:
+                    log_warn(f"Logout failed: {e}")
             elif cmd in ["/help", "help", "/?"]:
                 show_help()
             elif cmd in ["/exit", "exit", "/quit", "quit", "q"]:

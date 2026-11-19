@@ -23,7 +23,7 @@ High-performance, ultra-low-latency game and desktop streaming on Google Colab (
 - [x] Official MoonlightWeb web client (`moonlightweb.top`) with one-time Access PIN login per device
 - [x] Interactive live CLI console (`/pin`, `/pair`, `/status`, `/restart`, `/links`, `/pulse`, `/accel`, `/unfreeze`)
 - [x] Headless PyTorch 12MB VRAM GPU keepalive pulse loop to prevent Colab idle timeouts
-- [x] One-click Windows automation launchers (`start.bat`, `pair.bat`, `push.bat`)
+- [x] One-click Windows automation launchers (`start.bat`, `logout.bat`, `pair.bat`, `push.bat`)
 
 ---
 
@@ -347,6 +347,7 @@ To ensure stutter-free streaming over the relay:
 ## Repository Files
 
 - `start.bat`: One-click Windows launcher.
+- `logout.bat` / `logout_colab.py`: One-click Google Colab logout & account switcher (clears Keyring OAuth tokens & session cache).
 - `runner.py`: Host orchestrator, URL parser, Tailscale watcher, and keepalive loop with hardware and desktop selectors.
 - `setup_remote.py`: Automated remote installation, Windows 11 Fluent desktop, and Sunshine daemon configuration.
 - `pair.bat` / `pair.py`: One-click Moonlight pairing utility.
