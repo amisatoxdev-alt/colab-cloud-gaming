@@ -593,8 +593,8 @@ def allocate_session(use_highmem=False):
     """
     want = REGION_PREFERENCE
     max_attempts = 1 if want in ("any", "auto") else REGION_MAX_ATTEMPTS
-    # Colab refuses a new allocation for ~15-20 s after a stop.
-    RETRY_DELAY = 20
+    # Fast retry interval between allocation attempts
+    RETRY_DELAY = 3
     last_zone = ""
 
     if want not in ("any", "auto"):
