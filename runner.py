@@ -265,7 +265,7 @@ def _reset_kernel():
         return False
 
 
-def run_exec(args, capture=True, idle_timeout=90, hard_timeout=EXEC_HARD_TIMEOUT,
+def run_exec(args, capture=True, idle_timeout=180, hard_timeout=EXEC_HARD_TIMEOUT,
              retry_on_timeout=True):
     """Run `colab exec -s SESSION_NAME <args>`, serialized and time-bounded.
 
@@ -741,7 +741,7 @@ def setup_environment(desktop_mode="minimal"):
 
     print(f"      {C_GRAY}Executing parallel automated deployment on remote instance...{C_RESET}", flush=True)
     res = run_exec("--env DESKTOP_MODE=%s -f setup_remote.py" % desktop_mode,
-                   capture=False, hard_timeout=None, retry_on_timeout=False)
+                   capture=False, idle_timeout=900, hard_timeout=None, retry_on_timeout=False)
     if res.returncode != 0:
         log_warn("Deployment returned non-zero code. Verifying active services...")
     else:

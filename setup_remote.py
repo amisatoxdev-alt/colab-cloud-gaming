@@ -11,11 +11,48 @@ from concurrent.futures import ThreadPoolExecutor
 def log(msg):
     print(f"[*] {msg}", flush=True)
 
-def run(cmd, check=True):
-    res = subprocess.run(cmd, shell=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    if check and res.returncode != 0:
-        print(f"[!] Warning: '{cmd}' returned code {res.returncode}:\n{res.stdout[:500]}", flush=True)
-    return res
+def run(cmd, check=True, label=None, heartbeat=12, timeout=None):
+    """Run a shell command with periodic heartbeats to keep the kernel output active.
+
+    Colab CLI aborts execution if no output is received from the kernel for the duration
+    of --timeout. Long commands (apt-get install, package downloads, updates) must emit
+    heartbeats so the idle timer never fires. Output is captured to /var/log/services/setup_exec.log.
+    """
+    os.makedirs("/var/log/services", exist_ok=True)
+    tag = label or (cmd[:60].strip() if len(cmd) > 60 else cmd.strip())
+    log_file = "/var/log/services/setup_exec.log"
+    with open(log_file, "a") as lf:
+        proc = subprocess.Popen(
+            cmd, shell=True, stdout=lf, stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL, start_new_session=True
+        )
+        t0 = time.time()
+        next_beat = t0 + heartbeat
+        while True:
+            rc = proc.poll()
+            if rc is not None:
+                break
+            now = time.time()
+            if timeout and now - t0 > timeout:
+                proc.kill()
+                log(f"Command timed out after {int(now - t0)}s: {tag}")
+                rc = -9
+                break
+            if now >= next_beat:
+                log(f"Still working: {tag} ({int(now - t0)}s elapsed)")
+                next_beat = now + heartbeat
+            time.sleep(0.5)
+
+    tail = ""
+    try:
+        with open(log_file, "r", errors="replace") as lf:
+            tail = lf.read()[-500:]
+    except Exception:
+        pass
+
+    if check and rc != 0:
+        log(f"[!] Warning: '{tag}' returned code {rc}:\n{tail}")
+    return subprocess.CompletedProcess(cmd, rc, stdout=tail, stderr="")
 
 os.makedirs("/var/log/services", exist_ok=True)
 os.makedirs("/var/log/tunnels", exist_ok=True)
@@ -48,7 +85,7 @@ def fetch_file(target, url):
         log(f"Download error for {target}: {e}")
 
 executor = ThreadPoolExecutor(max_workers=5)
-download_futures = [executor.submit(fetch_file, target, url) for target, url in DOWNLOADS.items()]
+download_futures = {target: executor.submit(fetch_file, target, url) for target, url in DOWNLOADS.items()}
 
 # -------------------------------------------------------------
 # 1. Network Buffers, Fast DNS & Dedicated User Setup
@@ -158,19 +195,27 @@ run("ldconfig", check=False)
 # -------------------------------------------------------------
 # 3. APT Package Installation & Tailscale
 # -------------------------------------------------------------
-log("Configuring APT repositories and installing packages...")
-run("sudo add-apt-repository -y multiverse >/dev/null 2>&1", check=False)
-run("dpkg --add-architecture i386", check=False)
-run("apt-get update -y >/dev/null 2>&1", check=False)
+log("Configuring APT repositories and package sources...")
+run("sudo add-apt-repository -y multiverse", check=False, label="add multiverse repository", heartbeat=10)
+run("dpkg --add-architecture i386", check=False, label="add i386 architecture")
 
 # Add Tailscale repo cleanly
 run("curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/noble.noarmor.gpg | tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null 2>&1", check=False)
 run("curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/noble.tailscale-keyring.list | tee /etc/apt/sources.list.d/tailscale.list >/dev/null 2>&1", check=False)
-run("apt-get update -y >/dev/null 2>&1", check=False)
+log("Updating APT package indexes...")
+run("apt-get update -y", check=False, label="apt-get update", heartbeat=10)
 
-# Wait for parallel downloads to finish
-for fut in download_futures:
+# Wait for parallel downloads to finish with progress reporting
+log("Checking background downloads...")
+for target, fut in download_futures.items():
+    fname = os.path.basename(target)
+    t0 = time.time()
+    while not fut.done():
+        log(f"Still downloading {fname}... ({int(time.time() - t0)}s)")
+        time.sleep(6)
     fut.result()
+    sz = os.path.getsize(target) if os.path.exists(target) else 0
+    log(f"Package ready: {fname} ({sz // 1024} KB)")
 
 pkgs = [
     "xserver-xorg-core", "x11-xserver-utils", "x11vnc", "openbox", "xterm", "feh",
@@ -184,7 +229,13 @@ pkgs = [
     "/tmp/chrome.deb", "/tmp/moonlightweb.deb", "/tmp/sunshine.deb"
 ]
 log("Executing unified APT package installation...")
-run(f"DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends {' '.join(pkgs)} >/dev/null 2>&1", check=False)
+run(
+    f"DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends {' '.join(pkgs)}",
+    check=False,
+    label="apt-get install desktop packages",
+    heartbeat=10
+)
+log("Unified APT packages successfully installed.")
 
 # Bootstrap Steam to bypass zenity modal prompts and enable instant hardware 3D launch
 steam_dir = "/home/user/.steam/debian-installation"
