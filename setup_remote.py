@@ -829,6 +829,8 @@ ts_res = subprocess.run("tailscale up --operator=root --reset --accept-dns=false
                         shell=True, text=True, capture_output=True)
 ts_match = re.search(r'https://login\.tailscale\.com/a/[a-zA-Z0-9]+', ts_res.stdout + ts_res.stderr)
 tailscale_url = ts_match.group(0) if ts_match else "Check 'tailscale status'"
+if "login.tailscale.com" in tailscale_url:
+    log(f"Tailscale Authorization URL: {tailscale_url}")
 
 # Re-resolve node IP now that the node may be authenticated
 ts_ip_live = subprocess.run("tailscale ip -4 2>/dev/null || true", shell=True, text=True, capture_output=True).stdout.strip()

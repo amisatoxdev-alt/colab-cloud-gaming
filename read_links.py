@@ -27,13 +27,21 @@ for path in ['/tmp/links.json', '/var/log/services/links.json']:
         except Exception:
             pass
 
-# 2. Live Tailscale IP
+# 2. Live Tailscale IP & Auth URL
 try:
     ts_proc = subprocess.run("tailscale ip -4 2>/dev/null", shell=True, text=True, capture_output=True)
     ts_ip = ts_proc.stdout.strip()
     if ts_ip and not any(err in ts_ip for err in ["failed", "error", "Tailscale", "127.0.0.1"]):
         links["tailscale_ip"] = ts_ip
         links["sunshine_direct_tailscale"] = f"https://{ts_ip}:47990"
+    else:
+        # Check if there is an active login URL
+        if not links.get("tailscale_login_url") or "login.tailscale.com" not in links.get("tailscale_login_url", ""):
+            up_proc = subprocess.run("tailscale up --operator=root --reset --accept-dns=false --timeout=3s 2>&1",
+                                     shell=True, text=True, capture_output=True)
+            m_auth = re.search(r'https://login\.tailscale\.com/a/[a-zA-Z0-9]+', up_proc.stdout + up_proc.stderr)
+            if m_auth:
+                links["tailscale_login_url"] = m_auth.group(0)
 except Exception:
     pass
 

@@ -284,8 +284,12 @@ def run_exec(args, capture=True, idle_timeout=180, hard_timeout=EXEC_HARD_TIMEOU
     with EXEC_LOCK:
         r = run_cmd(cmd, capture=capture, timeout=hard_timeout)
         err_out = (r.stderr or "") + (r.stdout or "")
-        conn_lost = "Connection was lost" in err_out or "connection_ready" in err_out
-        if (r.returncode == 124 or conn_lost) and retry_on_timeout:
+        conn_lost = ("Connection was lost" in err_out or
+                     "connection_ready" in err_out or
+                     "Kernel dead" in err_out or
+                     "Kernel restarting" in err_out)
+        should_retry = (r.returncode == 124 or conn_lost or (not capture and r.returncode != 0)) and retry_on_timeout
+        if should_retry:
             log_warn("The session kernel disconnected or stopped responding — restarting it "
                      "and retrying once...")
             if _reset_kernel():
@@ -739,6 +743,7 @@ def setup_environment(desktop_mode="minimal"):
         sys.exit(1)
 
     print(f"      {C_GRAY}Executing parallel automated deployment on remote instance...{C_RESET}", flush=True)
+    _reset_kernel()
     res = run_exec("--env DESKTOP_MODE=%s -f setup_remote.py" % desktop_mode,
                    capture=False, idle_timeout=900, hard_timeout=None, retry_on_timeout=False)
     if res.returncode != 0:

@@ -8,6 +8,11 @@ out = res.stdout + res.stderr
 if "Logged out" in out or "error" in out.lower() or res.returncode != 0:
     m = re.search(r'https://login\.tailscale\.com/a/[a-zA-Z0-9]+', out)
     login_url = m.group(0) if m else ""
+    if not login_url:
+        up_res = subprocess.run("tailscale up --operator=root --reset --accept-dns=false --timeout=5s 2>&1", shell=True, text=True, capture_output=True)
+        m2 = re.search(r'https://login\.tailscale\.com/a/[a-zA-Z0-9]+', up_res.stdout + up_res.stderr)
+        if m2:
+            login_url = m2.group(0)
     print(f"STATUS:PENDING_AUTH {login_url}")
 else:
     print("STATUS:AUTHORIZED\n" + out.strip())
