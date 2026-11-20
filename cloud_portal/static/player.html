@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Streaming - Nebula Cloud Gaming</title>
+  <link rel="stylesheet" href="/static/css/portal.css">
+  <style>
+    body, html {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+      user-select: none;
+      -webkit-user-select: none;
+      touch-action: none;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="player-container" id="playerContainer">
+    <!-- Live Video Canvas -->
+    <canvas id="streamCanvas" width="1368" height="768"></canvas>
+
+    <!-- Floating Performance HUD -->
+    <div class="hud-overlay" id="hudOverlay">
+      <div class="hud-item">FPS: <span id="hudFps">--</span></div>
+      <div class="hud-item">Ping: <span id="hudPing">-- ms</span></div>
+      <div class="hud-item">Bitrate: <span id="hudBitrate">-- Mbps</span></div>
+      <div class="hud-item">Codec: <span id="hudCodec">H.264 ULL</span></div>
+      <div class="hud-item">Mode: <span id="hudInput">Touch</span></div>
+    </div>
+
+    <!-- Toggle Controls Pill (Mobile & Desktop) -->
+    <button class="controls-toggle-pill" id="btnToggleBar" title="Toggle Controls">
+      ⚙️ Menu
+    </button>
+
+    <!-- Top Floating Control Bar -->
+    <div class="player-controls" id="playerControls">
+      <button class="ctrl-btn" id="btnFullscreen" title="Toggle Fullscreen">⛶ Fullscreen</button>
+      <button class="ctrl-btn" id="btnVirtualMouse" title="Toggle On-Screen Mouse">🖱️ Mouse</button>
+      <button class="ctrl-btn" id="btnMobileKeyboard" title="Open Phone Keyboard">⌨️ Keyboard</button>
+      <button class="ctrl-btn" id="btnToggleHud" title="Toggle Stats HUD">📊 Stats</button>
+      <button class="ctrl-btn" id="btnRelock" title="Capture / Lock Mouse (PC)">🔒 Lock</button>
+      <button class="ctrl-btn" id="btnSound" title="Toggle Audio">🔊 Sound</button>
+      <button class="ctrl-btn exit" id="btnExit" title="Exit Stream">✕ Exit</button>
+    </div>
+
+    <!-- Hidden native keyboard trigger input -->
+    <input type="text" id="mobileKeyboardInput" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" style="position: fixed; opacity: 0; pointer-events: none; left: -9999px; top: -9999px;">
+
+    <!-- Mobile Quick Text Input Drawer (pops up when keyboard active) -->
+    <div class="mobile-text-drawer" id="mobileTextDrawer">
+      <input type="text" id="mobileTextInput" placeholder="Type text to send to Cloud PC..." autocomplete="off">
+      <button class="text-send-btn" id="btnSendText">Send</button>
+      <button class="text-key-btn" id="btnKeyEnter">Enter ↵</button>
+      <button class="text-key-btn" id="btnKeyEsc">Esc</button>
+      <button class="text-key-btn" id="btnKeyTab">Tab</button>
+      <button class="text-close-btn" id="btnCloseTextDrawer">✕</button>
+    </div>
+
+    <!-- On-Screen Virtual Mouse & Trackpad Overlay -->
+    <div class="virtual-mouse-overlay" id="virtualMouseOverlay">
+      <div class="vm-header">
+        <span class="vm-title">🖱️ On-Screen Mouse</span>
+        <button class="vm-mode-btn" id="btnToggleMouseMode">Mode: Trackpad</button>
+        <button class="vm-close-btn" id="btnCloseVirtualMouse">✕</button>
+      </div>
+
+      <!-- Touch Surface (for smooth trackpad motion) -->
+      <div class="vm-touchpad" id="vmTouchpad">
+        <span>Drag finger to move cursor</span>
+      </div>
+
+      <!-- On-Screen Mouse Buttons -->
+      <div class="vm-buttons">
+        <button class="vm-btn lmb" id="btnLMB">LEFT CLICK</button>
+        <div class="vm-scroll-col">
+          <button class="vm-btn sm" id="btnScrollUp">▲ Up</button>
+          <button class="vm-btn sm" id="btnScrollDown">▼ Down</button>
+        </div>
+        <button class="vm-btn rmb" id="btnRMB">RIGHT CLICK</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/js/stream_client.js"></script>
+</body>
+</html>

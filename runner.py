@@ -907,13 +907,13 @@ def print_dashboard(links, ts_ip=None):
         f"\n{top}",
         header,
         sep,
-        make_card_row("MoonlightWeb (Public)", funnel_display, C_GREEN + C_BOLD),
-        make_card_row("Access PIN (1 use)", pin_display, C_YELLOW + C_BOLD),
-        make_card_row("New PIN Command", "/pin  (or /pin new)", C_WHITE),
+        make_card_row("Nebula Web Gaming", funnel_display, C_GREEN + C_BOLD),
+        make_card_row("Streaming Engine", "WebCodecs + NVENC ULL (Direct Access)", C_CYAN),
         sep,
         make_card_row("Sunshine Direct (TS)", sunshine_ts, C_WHITE),
         make_card_row("Sunshine Credentials", links.get('sunshine_creds', 'admin / Sunshine123!'), C_WHITE),
         make_card_row("Tailscale Node IP", ts_display, C_WHITE),
+        make_card_row("MoonlightWeb Fallback", pin_display, C_YELLOW),
     ]
     if links.get('game'):
         lines.insert(-1, make_card_row("Steam Game", links.get('game'), C_MAGENTA + C_BOLD))
@@ -1400,9 +1400,9 @@ def main():
     # Friendly startup tip and instructions
     print(f"\n{C_CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{C_RESET}")
     print(f"{C_GREEN}[✓] System is fully ready!{C_RESET}")
-    print(f"    {C_YELLOW}💡 Web Login PIN:{C_RESET} {C_WHITE}Open the Funnel URL in any browser; it asks for a one-time PIN.{C_RESET}")
-    print(f"       {C_WHITE}Type {C_BOLD}{C_GREEN}/pin{C_RESET}{C_WHITE} to see it, or {C_BOLD}{C_GREEN}/pin new{C_RESET}{C_WHITE} to mint a fresh PIN for each new device.{C_RESET}")
-    print(f"       {C_WHITE}Native Moonlight clients pair with {C_BOLD}{C_GREEN}/pair <PIN>{C_RESET}{C_WHITE}. Verify GPU with {C_BOLD}{C_CYAN}/accel{C_RESET}{C_WHITE}.{C_RESET}")
+    print(f"    {C_CYAN}🌐 Nebula Cloud Gaming:{C_RESET} {C_WHITE}Open the Funnel URL in any browser for instant zero-install gaming.{C_RESET}")
+    print(f"    {C_YELLOW}💡 Moonlight Native/Web:{C_RESET} {C_WHITE}Pair native Moonlight clients with {C_BOLD}{C_GREEN}/pair <PIN>{C_RESET}{C_WHITE}. Access PIN with {C_BOLD}{C_GREEN}/pin{C_RESET}{C_WHITE}.{C_RESET}")
+    print(f"       {C_WHITE}Verify GPU acceleration with {C_BOLD}{C_CYAN}/accel{C_RESET}{C_WHITE}.{C_RESET}")
     print(f"{C_CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{C_RESET}\n")
 
     # Interactive live command loop
