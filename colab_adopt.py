@@ -54,8 +54,12 @@ def _pick(assignments, sessions, want_name, want_endpoint):
     # Otherwise prefer a GPU assignment (a leftover CPU runtime is useless here).
     gpu = [a for a in assignments if a.accelerator.value != "NONE"]
     pool = gpu or assignments
-    t4 = [a for a in pool if a.accelerator.value == "T4"]
-    return (t4 or pool)[0]
+    # Prioritize matching want_name accelerator (e.g. L4 or T4)
+    exact = [a for a in pool if a.accelerator.value.lower() == (want_name or "").lower()]
+    if exact:
+        return exact[0]
+    preferred = [a for a in pool if a.accelerator.value in ("L4", "T4")]
+    return (preferred or pool)[0]
 
 
 def main():

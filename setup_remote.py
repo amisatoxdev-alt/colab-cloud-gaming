@@ -627,7 +627,9 @@ os.makedirs("/etc/X11", exist_ok=True)
 with open("/etc/X11/edid.bin", "wb") as f:
     f.write(full_edid)
 
-# Dynamically query PCI Bus ID
+# Dynamically query GPU Name and PCI Bus ID
+gpu_name_res = subprocess.run("nvidia-smi --query-gpu=gpu_name --format=csv,noheader", shell=True, text=True, capture_output=True)
+gpu_board_name = gpu_name_res.stdout.strip() or "NVIDIA Graphics Device"
 pci_raw = subprocess.run("nvidia-smi --query-gpu=pci.bus_id --format=csv,noheader", shell=True, text=True, capture_output=True).stdout.strip()
 bus_id = "PCI:0:4:0"
 m = re.search(r'(\d+):(\d+)\.0', pci_raw)
@@ -648,7 +650,7 @@ Section "Device"
     Identifier     "Device0"
     Driver         "nvidia"
     VendorName     "NVIDIA Corporation"
-    BoardName      "Tesla T4"
+    BoardName      "{gpu_board_name}"
     BusID          "{bus_id}"
     Option         "ConnectedMonitor" "DVI-D-0"
     Option         "CustomEDID" "DVI-D-0:/etc/X11/edid.bin"
@@ -886,6 +888,10 @@ if funnel_url:
 os.makedirs("/root/.config/sunshine", exist_ok=True)
 os.makedirs("/home/user/.config/sunshine", exist_ok=True)
 
+# Detect if GPU supports AV1 hardware encode (e.g. Ada Lovelace L4)
+is_av1_supported = any(k in gpu_board_name.lower() for k in ("l4", "ada", "4090", "4080", "4070", "4060", "hopper"))
+av1_mode = 3 if is_av1_supported else 0
+
 sunshine_cfg = f"""origin_web_ui_allowed = wan
 origin_pin_allowed = wan
 csrf_allowed_origins = {','.join(allowed_origins)}
@@ -898,7 +904,7 @@ max_bitrate = 50000
 fec_percentage = 20
 packet_size = 1024
 
-# --- Tesla T4 hardware capture + encode (never software) ---
+# --- NVIDIA hardware capture + encode (NVFBC + NVENC) ---
 encoder = nvenc
 capture = nvfbc
 nvenc_preset = 1
@@ -909,7 +915,7 @@ nvenc_realtime_hags = enabled
 nvenc_latency_over_power = enabled
 
 hevc_mode = 3
-av1_mode = 0
+av1_mode = {av1_mode}
 
 # --- Low-latency streaming for Moonlight / MoonlightWeb ---
 channels = 2

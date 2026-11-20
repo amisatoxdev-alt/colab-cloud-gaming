@@ -133,7 +133,7 @@ def banner():
  ██║     ██║   ██║██║     ██╔══██║██╔══██╗    ██║      ██║     ██║   ██║██║   ██║██║  ██║
  ╚██████╗╚██████╔╝███████╗██║  ██║██████╔╝    ╚██████╗ ███████╗╚██████╔╝╚██████╔╝██████╔╝
   ╚═════╝ ╚═════╝ ╚══════╝╚═╝  ╚═╝╚═════╝      ╚═════╝ ╚══════╝ ╚═════╝  ╚═════╝ ╚═════╝ 
-{C_MAGENTA}          [ ULTRA-LOW LATENCY CLOUD GAMING ORCHESTRATOR • TESLA T4 ]{C_RESET}
+{C_MAGENTA}          [ ULTRA-LOW LATENCY CLOUD GAMING ORCHESTRATOR • TESLA T4 / ADA L4 ]{C_RESET}
 """
     print(art)
 
@@ -306,16 +306,27 @@ def ask_startup_options():
     print(f"{C_CYAN}╰─────────────────────────────────────────────────────────────────────────────╯{C_RESET}")
 
     # 1. Hardware Shape Selection
-    print(f"\n{C_CYAN}[1/4] Select Hardware Memory Profile:{C_RESET}")
-    print(f"  {C_GREEN}1{C_RESET}) {C_BOLD}Tesla T4 Standard{C_RESET} (~12GB RAM)   {C_GREEN}[Default • Free Tier / Standard Accounts]{C_RESET}")
-    print(f"  {C_GREEN}2{C_RESET}) {C_BOLD}Tesla T4 High-RAM{C_RESET} (~54GB RAM)   {C_MAGENTA}[Requires Colab Pro/Compute Units]{C_RESET}")
+    print(f"\n{C_CYAN}[1/4] Select GPU Hardware Accelerator Profile:{C_RESET}")
+    print(f"  {C_GREEN}1{C_RESET}) {C_BOLD}Tesla T4 Standard{C_RESET} (16GB VRAM, ~12GB RAM)   {C_GREEN}[Default • Free Tier / Standard Accounts]{C_RESET}")
+    print(f"  {C_GREEN}2{C_RESET}) {C_BOLD}Tesla T4 High-RAM{C_RESET} (16GB VRAM, ~54GB RAM)   {C_MAGENTA}[Requires Colab Pro/Compute Units]{C_RESET}")
+    print(f"  {C_GREEN}3{C_RESET}) {C_BOLD}Ada Lovelace L4{C_RESET}   (24GB VRAM, ~62GB RAM)   {C_CYAN}[Ada Lovelace • AV1 NVENC • Colab Pro]{C_RESET}")
     try:
-        hw_choice = input(f"      {C_YELLOW}Select hardware [1 or 2, default: 1]: {C_RESET}").strip()
+        hw_choice = input(f"      {C_YELLOW}Select hardware [1, 2, or 3, default: 1]: {C_RESET}").strip()
     except Exception:
         hw_choice = "1"
-    
-    use_highmem = (hw_choice == "2")
-    hw_label = "Tesla T4 High-RAM (~54GB RAM)" if use_highmem else "Tesla T4 Standard (~12GB RAM)"
+
+    if hw_choice in ("3", "l4", "L4"):
+        gpu_type = "l4"
+        use_highmem = False
+        hw_label = "NVIDIA Ada Lovelace L4 (24GB VRAM, ~62GB RAM)"
+    elif hw_choice in ("2", "highmem", "high-mem"):
+        gpu_type = "t4"
+        use_highmem = True
+        hw_label = "Tesla T4 High-RAM (16GB VRAM, ~54GB RAM)"
+    else:
+        gpu_type = "t4"
+        use_highmem = False
+        hw_label = "Tesla T4 Standard (16GB VRAM, ~12GB RAM)"
     log_ok(f"Selected Hardware: {C_BOLD}{hw_label}{C_RESET}")
 
     # 2. Region Selection
@@ -368,7 +379,7 @@ def ask_startup_options():
     game_label = "Grand Theft Auto V" if install_gta else "None"
     log_ok(f"Selected Game: {C_BOLD}{game_label}{C_RESET}\n")
 
-    return use_highmem, desktop_mode, install_gta
+    return gpu_type, use_highmem, desktop_mode, install_gta
 
 def install_gta_v():
     log_step("4/4", "Installing GTA V (Wine + DXVK + Steam shortcut)...")
@@ -514,21 +525,40 @@ def free_orphans():
     return not server_assignments()
 
 
-def ensure_session(use_highmem=False):
+def ensure_session(use_highmem=False, gpu_type="t4"):
     log_step("1/4", f"Checking Google Colab GPU session '{SESSION_NAME}'...")
     adopt_orphans()
 
     if not session_is_named():
-        alloc = allocate_session(use_highmem)
+        alloc = allocate_session(use_highmem, gpu_type=gpu_type)
         if not alloc:
             log_err("Failed to allocate Colab GPU session. Please check your "
                     "network, auth, or quota.")
             sys.exit(1)
     else:
         fam, zone, endpoint = current_session_region()
-        log_ok(f"Session '{SESSION_NAME}' is currently active"
+        active_hw = ""
+        for name, _e, hw in _session_rows():
+            if name == SESSION_NAME:
+                active_hw = hw
+                break
+        hw_desc = f" ({active_hw})" if active_hw else ""
+        log_ok(f"Session '{SESSION_NAME}' is currently active{hw_desc}"
                f"{f' in {zone}' if zone else ''}.")
-        if not region_ok(fam):
+
+        if gpu_type.upper() == "L4" and active_hw.upper() == "T4":
+            log_warn(f"Current active session is Tesla T4, but you selected Ada Lovelace L4.")
+            try:
+                ans = input(f"      {C_YELLOW}Stop current session and allocate Ada Lovelace L4? [y/N]: {C_RESET}").strip().lower()
+            except Exception:
+                ans = "n"
+            if ans == "y":
+                if stop_session():
+                    alloc = allocate_session(use_highmem=False, gpu_type="l4")
+                    if not alloc:
+                        log_err("Re-allocation failed after stopping the old session.")
+                        sys.exit(1)
+        elif not region_ok(fam):
             log_warn(f"Active session is in {zone or 'an unknown region'}, "
                      f"which does not match your preference "
                      f"({REGION_LABELS.get(REGION_PREFERENCE, REGION_PREFERENCE)}).")
@@ -541,7 +571,7 @@ def ensure_session(use_highmem=False):
                 ans = "n"
             if ans == "y":
                 if stop_session():
-                    alloc = allocate_session(use_highmem)
+                    alloc = allocate_session(use_highmem, gpu_type=gpu_type)
                     if not alloc:
                         log_err("Re-allocation failed after stopping the old "
                                 "session.")
@@ -563,30 +593,32 @@ def region_ok(family):
     return family == REGION_PREFERENCE
 
 
-def _shape_label(use_highmem):
+def _shape_label(use_highmem, gpu_type="t4"):
+    if gpu_type.lower() == "l4":
+        return "L4 24GB VRAM (~62GB RAM)"
     return "High-RAM (~54GB)" if use_highmem else "Standard (~12GB)"
 
 
-def _ready(use_highmem, note=""):
+def _ready(use_highmem, note="", gpu_type="t4"):
     fam, zone, endpoint = current_session_region()
-    log_ok(f"Session '{SESSION_NAME}' is READY ({_shape_label(use_highmem)}) in "
+    log_ok(f"Session '{SESSION_NAME}' is READY ({_shape_label(use_highmem, gpu_type)}) in "
            f"{zone or 'unknown region'}{note}.")
     return True
 
 
-def _current_family_ok(use_highmem):
+def _current_family_ok(use_highmem, gpu_type="t4"):
     """Shared tail of both allocation paths: is the live VM good enough?"""
     fam, zone, endpoint = current_session_region()
     if REGION_PREFERENCE == "any" or region_ok(fam):
-        return _ready(use_highmem)
+        return _ready(use_highmem, gpu_type=gpu_type)
     if REGION_PREFERENCE == "auto" and fam == "sg":
-        return _ready(use_highmem)
+        return _ready(use_highmem, gpu_type=gpu_type)
     return None
 
 
-def allocate_session(use_highmem=False):
+def allocate_session(use_highmem=False, gpu_type="t4"):
     """
-    Allocate the T4 session, retrying until the requested region family fits.
+    Allocate the GPU session (T4 or L4), retrying until the requested region family fits.
 
     `colab new` exposes no region flag, so region is pure luck per allocation
     and the only lever is stop + re-allocate. Order of operations matters:
@@ -627,7 +659,7 @@ def allocate_session(use_highmem=False):
                     time.sleep(RETRY_DELAY)
                 continue
 
-            ok = _current_family_ok(use_highmem)
+            ok = _current_family_ok(use_highmem, gpu_type=gpu_type)
             if ok is not None:
                 return ok
 
@@ -644,16 +676,30 @@ def allocate_session(use_highmem=False):
             break
 
         # ------------------------------------------------ allocate something new
-        flags = "--gpu t4 --high-mem" if use_highmem else "--gpu t4"
+        if gpu_type.lower() == "l4":
+            flags = "--gpu l4"
+            desc = "NVIDIA Ada Lovelace L4 (~24GB VRAM)"
+        else:
+            flags = "--gpu t4 --high-mem" if use_highmem else "--gpu t4"
+            desc = f"{'High-RAM' if use_highmem else 'Standard'} Tesla T4"
+
         print(f"      {C_GRAY}[{attempt}/{max_attempts}] Allocating "
-              f"{'High-RAM' if use_highmem else 'Standard'} Tesla T4 "
+              f"{desc} "
               f"runtime...{C_RESET}", flush=True)
         r = run_cmd(f"colab new -s {SESSION_NAME} {flags}", capture=True, timeout=420)
 
-        if r.returncode != 0 and use_highmem:
+        if r.returncode != 0 and gpu_type.lower() == "t4" and use_highmem:
             print(f"      {C_YELLOW}High-RAM allocation refused. Trying the "
                   f"standard T4 shape...{C_RESET}", flush=True)
             r = run_cmd(f"colab new -s {SESSION_NAME} --gpu t4", capture=True, timeout=420)
+        elif r.returncode != 0 and gpu_type.lower() == "l4":
+            msg = ((r.stderr or "") + (r.stdout or "")).strip()[:200]
+            log_warn(f"L4 allocation failed: {msg}")
+            if any(k in msg.lower() for k in ("quota", "available", "tier", "denied", "compute unit")):
+                print(f"      {C_YELLOW}L4 unavailable on account. Falling back to Tesla T4 shape...{C_RESET}", flush=True)
+                r = run_cmd(f"colab new -s {SESSION_NAME} --gpu t4", capture=True, timeout=420)
+                if r.returncode == 0:
+                    gpu_type = "t4"
 
         if r.returncode != 0:
             msg = ((r.stderr or "") + (r.stdout or "")).strip()[:200]
@@ -664,7 +710,7 @@ def allocate_session(use_highmem=False):
             # it may have actually created one before erroring.
             adopt_orphans()
             if session_is_named():
-                ok = _current_family_ok(use_highmem)
+                ok = _current_family_ok(use_highmem, gpu_type=gpu_type)
                 if ok is not None:
                     return ok
 
@@ -683,7 +729,7 @@ def allocate_session(use_highmem=False):
         last_zone = zone
         log_ok(f"Allocated: {zone or 'unknown region'}  ({endpoint or 'id?'})")
 
-        ok = _current_family_ok(use_highmem)
+        ok = _current_family_ok(use_highmem, gpu_type=gpu_type)
         if ok is not None:
             return ok
 
@@ -701,14 +747,19 @@ def allocate_session(use_highmem=False):
         if session_is_named():
             log_warn(f"Could not get '{want}' after {max_attempts} attempts — "
                      f"keeping the live session instead of destroying it.")
-            return _ready(use_highmem, " (fallback)")
+            return _ready(use_highmem, " (fallback)", gpu_type=gpu_type)
 
     log_warn(f"No live session after {max_attempts} attempts. Final allocation "
              f"in any region...")
     free_orphans()
-    r = run_cmd(f"colab new -s {SESSION_NAME} --gpu t4", capture=True, timeout=420)
+    final_flags = "--gpu l4" if gpu_type.lower() == "l4" else "--gpu t4"
+    r = run_cmd(f"colab new -s {SESSION_NAME} {final_flags}", capture=True, timeout=420)
+    if r.returncode != 0 and gpu_type.lower() == "l4":
+        r = run_cmd(f"colab new -s {SESSION_NAME} --gpu t4", capture=True, timeout=420)
+        if r.returncode == 0:
+            gpu_type = "t4"
     if session_is_named():
-        return _ready(use_highmem, " (fallback)")
+        return _ready(use_highmem, " (fallback)", gpu_type=gpu_type)
 
     log_err(f"Could not allocate any session after {max_attempts} attempts "
             f"plus a final fallback.")
@@ -986,34 +1037,38 @@ def show_pin(new=False):
 
 def show_accel():
     print(f"\n{C_CYAN}[*] Verifying GPU Hardware 3D & Video Acceleration on session '{SESSION_NAME}'...{C_RESET}", flush=True)
-    code = """
-import subprocess, json
+    code = r"""
+import subprocess, json, re
 
 report = {}
 # 1. GPU & Driver
 smi = subprocess.run("nvidia-smi --query-gpu=name,driver_version,memory.total,temperature.gpu,utilization.gpu --format=csv,noheader", shell=True, text=True, capture_output=True)
 if smi.stdout.strip():
     p = [x.strip() for x in smi.stdout.strip().split(",")]
-    report["gpu"] = p[0] if len(p) > 0 else "Tesla T4"
+    report["gpu"] = p[0] if len(p) > 0 else "NVIDIA GPU"
     report["driver"] = p[1] if len(p) > 1 else "Unknown"
-    report["vram"] = p[2] if len(p) > 2 else "15360 MiB"
+    report["vram"] = p[2] if len(p) > 2 else "Unknown"
     report["temp"] = p[3] if len(p) > 3 else "N/A"
     report["util"] = p[4] if len(p) > 4 else "0 %"
 
 # 2. OpenGL
 gl = subprocess.run("DISPLAY=:1 glxinfo -B 2>/dev/null", shell=True, text=True, capture_output=True)
 report["opengl_direct"] = "Yes (Hardware Direct)" if "direct rendering: Yes" in gl.stdout else "No"
-report["opengl_renderer"] = "Tesla T4 / PCIe / SSE2" if "Tesla T4" in gl.stdout else "Software / LLVMpipe"
-report["opengl_version"] = "4.6.0 NVIDIA 580.82.07" if "580.82" in gl.stdout else "Standard"
+rend_m = re.search(r"OpenGL renderer string:\s*(.+)", gl.stdout)
+report["opengl_renderer"] = rend_m.group(1).strip() if rend_m else (report.get("gpu", "NVIDIA GPU") + " / Direct")
+ver_m = re.search(r"OpenGL version string:\s*(.+)", gl.stdout)
+report["opengl_version"] = ver_m.group(1).strip() if ver_m else "Standard"
 
 # 3. Vulkan
 vk = subprocess.run("DISPLAY=:1 vulkaninfo --summary 2>/dev/null", shell=True, text=True, capture_output=True)
-report["vulkan_device"] = "Tesla T4 (Discrete GPU)" if "Tesla T4" in vk.stdout else "Software"
-report["vulkan_api"] = "Vulkan 1.4.312 (NVIDIA)" if "1.4" in vk.stdout else "1.3+"
+dev_m = re.search(r"deviceName\s*=\s*(.+)", vk.stdout)
+report["vulkan_device"] = dev_m.group(1).strip() if dev_m else report.get("gpu", "NVIDIA GPU")
+api_m = re.search(r"apiVersion\s*=\s*(.+)", vk.stdout)
+report["vulkan_api"] = api_m.group(1).strip() if api_m else "1.3+"
 
 # 4. NVENC / NvFBC
 sun_log = subprocess.run("tail -n 250 /home/user/sunshine.log 2>/dev/null", shell=True, text=True, capture_output=True)
-report["nvenc"] = "Active (hevc_nvenc / h264_nvenc)" if ("hevc_nvenc" in sun_log.stdout or "h264_nvenc" in sun_log.stdout) else "Ready / Standby"
+report["nvenc"] = "Active (av1 / hevc / h264)" if any(k in sun_log.stdout for k in ("av1_nvenc", "hevc_nvenc", "h264_nvenc")) else "Ready / Standby"
 report["nvfbc"] = "Active (Direct GPU VRAM Capture)" if "Screencasting with NvFBC" in sun_log.stdout else "Initialized"
 
 # 5. Apps in VRAM
@@ -1035,8 +1090,8 @@ print(json.dumps(report))
     except Exception:
         rep = {}
 
-    gpu_display = f"{rep.get('gpu', 'Tesla T4')} ({rep.get('vram', '15360 MiB')})"
-    vulkan_display = f"{rep.get('vulkan_device', 'Tesla T4')} - {rep.get('vulkan_api', '1.4')}"
+    gpu_display = f"{rep.get('gpu', 'NVIDIA GPU')} ({rep.get('vram', 'Unknown')})"
+    vulkan_display = f"{rep.get('vulkan_device', 'NVIDIA GPU')} - {rep.get('vulkan_api', '1.3+')}"
     temp_util = f"{rep.get('temp', 'N/A')}°C / {rep.get('util', '0 %')}"
 
     lines = [
@@ -1058,7 +1113,7 @@ print(json.dumps(report))
 
 def unfreeze_input():
     print(f"{C_CYAN}[*] Resetting X11 input queue and releasing all modifier keys...{C_RESET}", flush=True)
-    code = """
+    code = r"""
 import subprocess
 # Release any logically stuck modifier keys (Shift, Ctrl, Alt, Super)
 subprocess.run("DISPLAY=:1 xdotool keyup Shift_L Shift_R Control_L Control_R Alt_L Alt_R Super_L Super_R 2>/dev/null || true", shell=True)
@@ -1081,7 +1136,7 @@ print("UNFROZEN_OK")
 
 def show_status():
     print(f"\n{C_CYAN}[*] Querying live hardware & service telemetry from session '{SESSION_NAME}'...{C_RESET}", flush=True)
-    code = """
+    code = r"""
 import subprocess
 print('=== GPU TELEMETRY ===')
 subprocess.run('nvidia-smi --query-gpu=name,temperature.gpu,utilization.gpu,memory.used,memory.total --format=csv,noheader', shell=True)
@@ -1101,7 +1156,7 @@ subprocess.run('ss -tulpn | grep 47989 || true', shell=True)
 
 def restart_services():
     print(f"{C_CYAN}[*] Restarting Sunshine & Openbox desktop cleanly...{C_RESET}", flush=True)
-    code = """
+    code = r"""
 import subprocess, time
 subprocess.run('pkill -9 -x -u user sunshine 2>/dev/null || true', shell=True)
 subprocess.run('killall -9 zenity steam 2>/dev/null || true', shell=True)
@@ -1203,6 +1258,7 @@ def show_help():
         ("/pin new", "Mint a fresh single-use PIN for a new device"),
         ("/funnel", "Publish MoonlightWeb publicly via Tailscale Funnel"),
         ("/accel", "Verify OpenGL 4.6, Vulkan 1.4 & NVENC hardware accel"),
+        ("/gpu l4|t4", "Switch GPU accelerator to L4 or T4 and re-allocate"),
         ("/unfreeze", "Release stuck Shift/Alt/Ctrl keys and unfreeze input"),
         ("/links", "Display full endpoint dashboard with PIN & creds"),
         ("/status", "Check GPU temperature, VRAM usage, active stream"),
@@ -1296,11 +1352,12 @@ def keep_alive_worker():
 # 5. Main Interactive Shell
 # -------------------------------------------------------------
 def main():
-    global latest_links, REGION_PREFERENCE
+    global latest_links, REGION_PREFERENCE, SESSION_NAME
     banner()
     
-    use_highmem, desktop_mode, install_gta = ask_startup_options()
-    ensure_session(use_highmem)
+    gpu_type, use_highmem, desktop_mode, install_gta = ask_startup_options()
+    SESSION_NAME = gpu_type.lower()
+    ensure_session(use_highmem=use_highmem, gpu_type=gpu_type)
     setup_environment(desktop_mode)
     latest_links = get_links(verbose=True)
 
@@ -1366,7 +1423,15 @@ def main():
             elif cmd in ["/pin", "pin", "/newpin", "/pinnew"]:
                 show_pin(new=(arg.lower() in ("new", "gen", "fresh", "-n", "n")))
             elif cmd in ["/accel", "/gpu", "accel", "gpu"]:
-                show_accel()
+                if arg.lower() in ("l4", "t4"):
+                    new_gpu = arg.lower()
+                    log_step("GPU", f"Switching GPU preference to {new_gpu.upper()}...")
+                    SESSION_NAME = new_gpu
+                    print(f"      {C_GRAY}Stopping session and allocating {new_gpu.upper()}...{C_RESET}", flush=True)
+                    if stop_session() and allocate_session(use_highmem=False, gpu_type=new_gpu):
+                        log_warn("New runtime allocated — the desktop stack is NOT deployed yet. Re-run start.bat to provision it.")
+                else:
+                    show_accel()
             elif cmd in ["/unfreeze", "/fix", "unfreeze", "fix"]:
                 unfreeze_input()
             elif cmd in ["/links", "links", "/urls"]:
@@ -1421,7 +1486,7 @@ def main():
                            f"{REGION_LABELS[REGION_PREFERENCE]}")
                     print(f"      {C_GRAY}Stopping session and re-allocating..."
                           f"{C_RESET}", flush=True)
-                    if stop_session() and allocate_session(False):
+                    if stop_session() and allocate_session(use_highmem=False, gpu_type=SESSION_NAME):
                         log_warn("New runtime allocated — the desktop stack is NOT "
                                  "deployed yet. Re-run start.bat to provision it.")
                 elif arg:

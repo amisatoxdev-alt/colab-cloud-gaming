@@ -14,8 +14,20 @@ import json
 import time
 import subprocess
 
-SESSION_NAME = "t4"
 CONFIG_PATH = os.path.expanduser("~/.config/colab-cli/sessions.json")
+
+def get_default_session():
+    try:
+        if os.path.exists(CONFIG_PATH):
+            with open(CONFIG_PATH, "r") as f:
+                data = json.load(f)
+            if data:
+                return next(iter(data.keys()))
+    except Exception:
+        pass
+    return "t4"
+
+SESSION_NAME = get_default_session()
 
 def reset_kernel(session=SESSION_NAME):
     """Clear cached kernel_id/session_id so the next exec boots a fresh kernel."""
@@ -89,7 +101,7 @@ def interactive(session=SESSION_NAME):
 
 def main():
     args = sys.argv[1:]
-    session = SESSION_NAME
+    session = get_default_session()
     if args and args[0] in ("-s", "--session") and len(args) > 2:
         session = args[1]
         args = args[2:]

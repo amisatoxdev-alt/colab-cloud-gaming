@@ -52,7 +52,19 @@ def family_of_zone(zone):
 
 
 def main():
-    name = _arg("--name", DEFAULT_NAME)
+    name = _arg("--name", None)
+    if not name:
+        sessions_path = os.path.expanduser("~/.config/colab-cli/sessions.json")
+        if os.path.exists(sessions_path):
+            try:
+                with open(sessions_path, "r") as f:
+                    data = json.load(f)
+                if data:
+                    name = next(iter(data.keys()))
+            except Exception:
+                pass
+    if not name:
+        name = DEFAULT_NAME
     endpoint = url = zone = ""
 
     # Fast path: check local store directly from disk (0.001s, no network call or timeout risk)
