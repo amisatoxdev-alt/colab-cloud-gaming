@@ -907,7 +907,7 @@ def print_dashboard(links, ts_ip=None):
         f"\n{top}",
         header,
         sep,
-        make_card_row("Nebula Web Gaming", funnel_display, C_GREEN + C_BOLD),
+        make_card_row("XGS Xyris Cloud", funnel_display, C_GREEN + C_BOLD),
         make_card_row("Streaming Engine", "WebCodecs + NVENC ULL (Direct Access)", C_CYAN),
         sep,
         make_card_row("Sunshine Direct (TS)", sunshine_ts, C_WHITE),
@@ -1400,7 +1400,7 @@ def main():
     # Friendly startup tip and instructions
     print(f"\n{C_CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{C_RESET}")
     print(f"{C_GREEN}[✓] System is fully ready!{C_RESET}")
-    print(f"    {C_CYAN}🌐 Nebula Cloud Gaming:{C_RESET} {C_WHITE}Open the Funnel URL in any browser for instant zero-install gaming.{C_RESET}")
+    print(f"    {C_CYAN}🌐 XGS Xyris Cloud Gaming:{C_RESET} {C_WHITE}Open the Funnel URL or Tailscale IP in any browser for instant zero-install gaming.{C_RESET}")
     print(f"    {C_YELLOW}💡 Moonlight Native/Web:{C_RESET} {C_WHITE}Pair native Moonlight clients with {C_BOLD}{C_GREEN}/pair <PIN>{C_RESET}{C_WHITE}. Access PIN with {C_BOLD}{C_GREEN}/pin{C_RESET}{C_WHITE}.{C_RESET}")
     print(f"       {C_WHITE}Verify GPU acceleration with {C_BOLD}{C_CYAN}/accel{C_RESET}{C_WHITE}.{C_RESET}")
     print(f"{C_CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{C_RESET}\n")

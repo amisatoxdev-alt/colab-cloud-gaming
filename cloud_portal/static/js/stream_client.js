@@ -1,4 +1,4 @@
-// Nebula Cloud Gaming - Ultra-Low Latency WebCodecs + WebGPU Streaming Client
+// XGS - Xyris Cloud Gaming Ultra-Low Latency WebCodecs + WebGPU Streaming Client
 
 (function() {
   const canvas = document.getElementById("streamCanvas");
@@ -10,11 +10,29 @@
   const hudCodec = document.getElementById("hudCodec");
   const hudInput = document.getElementById("hudInput");
 
-  // Mobile / Overlay UI Elements
+  // In-Game Toolbar & Controls
   const playerControls = document.getElementById("playerControls");
   const btnToggleBar = document.getElementById("btnToggleBar");
-  const virtualMouseOverlay = document.getElementById("virtualMouseOverlay");
+  const btnRelock = document.getElementById("btnRelock");
+  const btnFullscreen = document.getElementById("btnFullscreen");
   const btnVirtualMouse = document.getElementById("btnVirtualMouse");
+  const btnMobileKeyboard = document.getElementById("btnMobileKeyboard");
+  const btnOpenInGameSettings = document.getElementById("btnOpenInGameSettings");
+  const btnToggleHud = document.getElementById("btnToggleHud");
+  const btnSound = document.getElementById("btnSound");
+  const btnExit = document.getElementById("btnExit");
+
+  // In-Game Settings Modal Elements
+  const inGameSettingsModal = document.getElementById("inGameSettingsModal");
+  const btnCloseInGameSettings = document.getElementById("btnCloseInGameSettings");
+  const btnApplyInGameSettings = document.getElementById("btnApplyInGameSettings");
+  const liveBitrateSlider = document.getElementById("liveBitrateSlider");
+  const liveBitrateVal = document.getElementById("liveBitrateVal");
+  const liveMouseSelect = document.getElementById("liveMouseSelect");
+  const liveQueueSelect = document.getElementById("liveQueueSelect");
+
+  // Mobile / Virtual Mouse Elements
+  const virtualMouseOverlay = document.getElementById("virtualMouseOverlay");
   const btnCloseVirtualMouse = document.getElementById("btnCloseVirtualMouse");
   const btnToggleMouseMode = document.getElementById("btnToggleMouseMode");
   const vmTouchpad = document.getElementById("vmTouchpad");
@@ -23,7 +41,7 @@
   const btnScrollUp = document.getElementById("btnScrollUp");
   const btnScrollDown = document.getElementById("btnScrollDown");
 
-  const btnMobileKeyboard = document.getElementById("btnMobileKeyboard");
+  // Mobile Keyboard Elements
   const mobileKeyboardInput = document.getElementById("mobileKeyboardInput");
   const mobileTextDrawer = document.getElementById("mobileTextDrawer");
   const mobileTextInput = document.getElementById("mobileTextInput");
@@ -44,20 +62,19 @@
   let bytesReceived = 0;
   let lastBitrateTime = performance.now();
 
-  let mouseMode = "direct"; // "direct" (tap to click) or "trackpad" (relative motion)
-  let lastTouchX = null;
-  let lastTouchY = null;
-  let isTouchDragging = false;
-
-  // Detect mobile
   const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+  let mouseMode = localStorage.getItem("nebula_mouse") || (isMobile ? "touch" : "locked");
+  let queueMode = localStorage.getItem("nebula_queue") || "zero";
+
   if (isMobile) {
-    if (hudInput) hudInput.textContent = "Touch (Direct)";
+    if (hudInput) hudInput.textContent = "Touch Controls";
     if (virtualMouseOverlay) virtualMouseOverlay.style.display = "flex";
+  } else {
+    if (hudInput) hudInput.textContent = (mouseMode === "locked") ? "Gaming Lock (Click to Lock)" : "Desktop Absolute";
   }
 
   // -------------------------------------------------------------
-  // 1. Initialize WebCodecs VideoDecoder
+  // 1. WebCodecs VideoDecoder Initialization (Zero Buffer)
   // -------------------------------------------------------------
   function initVideoDecoder() {
     if (!window.VideoDecoder) {
@@ -80,28 +97,27 @@
       }
     });
 
-    // Hardware H.264 High Profile Level 4.2 (Universal support)
-    const codecString = "avc1.64002a";
+    // Hardware H.264 High Profile Level 4.2 (Universal zero-latency decoding)
     videoDecoder.configure({
-      codec: codecString,
+      codec: "avc1.64002a",
       optimizeForLatency: true
     });
     if (hudCodec) hudCodec.textContent = "H.264 ULL";
   }
 
   // -------------------------------------------------------------
-  // 2. WebSocket Connections
+  // 2. WebSocket Connections (Streaming & Controls)
   // -------------------------------------------------------------
   function connectStream() {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const host = window.location.host;
 
-    // Stream Socket (Video + Audio)
+    // Stream WebSocket (Video & Audio)
     wsStream = new WebSocket(`${protocol}//${host}/ws/stream`);
     wsStream.binaryType = "arraybuffer";
 
     wsStream.onopen = () => {
-      console.log("[Stream] WebSocket Connected");
+      console.log("[Stream] Connected to XGS stream engine");
       const savedBitrate = localStorage.getItem("nebula_bitrate") || 15;
       wsStream.send(JSON.stringify({ bitrate_mbps: savedBitrate }));
     };
@@ -118,6 +134,11 @@
         const isKey = data[1] === 1;
         const nalData = data.subarray(2);
 
+        // Zero-queue latency protection: drop delta frame if decoder is backed up
+        if (queueMode === "zero" && !isKey && videoDecoder.decodeQueueSize > 2) {
+          return;
+        }
+
         try {
           const chunk = new EncodedVideoChunk({
             type: isKey ? "key" : "delta",
@@ -130,23 +151,23 @@
         }
       }
 
-      // Tag 0x02: Audio Chunk (Opus / PCM)
+      // Tag 0x02: Audio Chunk
       else if (tag === 0x02 && audioCtx) {
         // Audio playback
       }
     };
 
     wsStream.onclose = () => {
-      console.warn("[Stream] WebSocket Closed. Reconnecting in 2s...");
+      console.warn("[Stream] Connection closed. Reconnecting in 2s...");
       setTimeout(connectStream, 2000);
     };
 
-    // Control Socket (Inputs & Telemetry)
+    // Control WebSocket (Inputs & Precision Ping)
     wsControl = new WebSocket(`${protocol}//${host}/ws/control`);
     wsControl.binaryType = "arraybuffer";
 
     wsControl.onopen = () => {
-      console.log("[Control] WebSocket Connected");
+      console.log("[Control] Connected to XGS input driver");
       startPingLoop();
     };
 
@@ -163,18 +184,17 @@
     };
 
     wsControl.onclose = () => {
-      console.warn("[Control] WebSocket Closed. Reconnecting in 2s...");
+      console.warn("[Control] Connection closed. Reconnecting in 2s...");
       setTimeout(connectStream, 2000);
     };
   }
 
   // -------------------------------------------------------------
-  // 3. Precision Ping & FPS Timer
+  // 3. High-Precision Ping & Telemetry
   // -------------------------------------------------------------
   function startPingLoop() {
     setInterval(() => {
       if (wsControl && wsControl.readyState === WebSocket.OPEN) {
-        // Embed high-precision Float64 timestamp in ping packet [0x07, 8 bytes]
         const buf = new ArrayBuffer(9);
         const view = new DataView(buf);
         view.setUint8(0, 0x07);
@@ -204,7 +224,7 @@
   }
 
   // -------------------------------------------------------------
-  // 4. Low-Latency Input Senders
+  // 4. Binary Input Dispatchers (Sub-0.05ms XTest Calls)
   // -------------------------------------------------------------
   function sendMouseMoveAbs(x, y) {
     if (!wsControl || wsControl.readyState !== WebSocket.OPEN) return;
@@ -256,12 +276,24 @@
   }
 
   // -------------------------------------------------------------
-  // 5. Desktop Mouse & Keyboard Listeners
+  // 5. Gaming Pointer Lock & Mouse Listeners
   // -------------------------------------------------------------
-  function initDesktopInputs() {
+  function lockMouseForGaming() {
+    try {
+      const lockPromise = canvas.requestPointerLock({ unadjustedMovement: true });
+      if (lockPromise && lockPromise.catch) {
+        lockPromise.catch(() => canvas.requestPointerLock());
+      }
+    } catch (e) {
+      canvas.requestPointerLock();
+    }
+  }
+
+  function initMouseAndKeyboard() {
+    // Canvas click locks mouse if Gaming mode selected
     canvas.addEventListener("click", () => {
-      if (!isPointerLocked && !isMobile) {
-        canvas.requestPointerLock();
+      if (!isMobile && mouseMode === "locked" && !isPointerLocked) {
+        lockMouseForGaming();
       }
       if (!audioCtx) {
         audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -270,13 +302,22 @@
 
     document.addEventListener("pointerlockchange", () => {
       isPointerLocked = (document.pointerLockElement === canvas);
+      if (btnRelock) {
+        if (isPointerLocked) {
+          btnRelock.classList.add("active");
+          btnRelock.textContent = "🔓 UNLOCK (ESC)";
+        } else {
+          btnRelock.classList.remove("active");
+          btnRelock.textContent = "🔒 LOCK MOUSE";
+        }
+      }
       if (hudInput) {
-        hudInput.textContent = isPointerLocked ? "Locked 3D" : (isMobile ? `Touch (${mouseMode})` : "Absolute");
+        hudInput.textContent = isPointerLocked ? "Gaming Locked (3D)" : (isMobile ? `Touch (${mouseMode})` : "Desktop Absolute");
       }
     });
 
     window.addEventListener("mousemove", (e) => {
-      if (isPointerLocked) {
+      if (isPointerLocked || mouseMode === "locked") {
         sendMouseMoveRel(e.movementX, e.movementY);
       } else if (!isMobile) {
         const rect = canvas.getBoundingClientRect();
@@ -291,8 +332,8 @@
     window.addEventListener("mousedown", (e) => {
       if (isMobile) return;
       let btn = 1;
-      if (e.button === 1) btn = 2;
-      if (e.button === 2) btn = 3;
+      if (e.button === 1) btn = 2; // Middle
+      if (e.button === 2) btn = 3; // Right
       sendMouseButton(btn, true);
     });
 
@@ -308,6 +349,7 @@
       sendMouseWheel(e.deltaY / 10);
     }, { passive: true });
 
+    // Keyboard capture
     window.addEventListener("keydown", (e) => {
       if (e.code === "KeyF" && e.ctrlKey && e.shiftKey) {
         hudOverlay.style.display = hudOverlay.style.display === "none" ? "flex" : "none";
@@ -328,31 +370,29 @@
   }
 
   // -------------------------------------------------------------
-  // 6. Mobile Touch & On-Screen Virtual Mouse Handlers
+  // 6. Mobile Touch & Virtual Mouse
   // -------------------------------------------------------------
   function initMobileTouch() {
     let touchStartTime = 0;
-    let touchStartX = 0;
-    let touchStartY = 0;
+    let lastTouchX = null;
+    let lastTouchY = null;
+    let isDragging = false;
 
-    // Direct Touch on Game Canvas
     canvas.addEventListener("touchstart", (e) => {
       if (e.touches.length === 1) {
         const t = e.touches[0];
         const rect = canvas.getBoundingClientRect();
-        touchStartX = (t.clientX - rect.left) * (canvas.width / rect.width);
-        touchStartY = (t.clientY - rect.top) * (canvas.height / rect.height);
+        const x = (t.clientX - rect.left) * (canvas.width / rect.width);
+        const y = (t.clientY - rect.top) * (canvas.height / rect.height);
         touchStartTime = performance.now();
         lastTouchX = t.clientX;
         lastTouchY = t.clientY;
-        isTouchDragging = false;
+        isDragging = false;
 
-        // Move cursor to touch position
-        if (mouseMode === "direct") {
-          sendMouseMoveAbs(touchStartX, touchStartY);
+        if (mouseMode !== "trackpad") {
+          sendMouseMoveAbs(x, y);
         }
       } else if (e.touches.length === 2) {
-        // Two-finger tap or scroll
         lastTouchY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
       }
     }, { passive: false });
@@ -361,23 +401,21 @@
       e.preventDefault();
       if (e.touches.length === 1) {
         const t = e.touches[0];
-        isTouchDragging = true;
+        isDragging = true;
 
-        if (mouseMode === "direct") {
+        if (mouseMode === "trackpad") {
+          const dx = (t.clientX - lastTouchX) * 1.6;
+          const dy = (t.clientY - lastTouchY) * 1.6;
+          sendMouseMoveRel(dx, dy);
+          lastTouchX = t.clientX;
+          lastTouchY = t.clientY;
+        } else {
           const rect = canvas.getBoundingClientRect();
           const x = (t.clientX - rect.left) * (canvas.width / rect.width);
           const y = (t.clientY - rect.top) * (canvas.height / rect.height);
           sendMouseMoveAbs(x, y);
-        } else {
-          // Trackpad-style relative movement
-          const dx = (t.clientX - lastTouchX) * 1.5;
-          const dy = (t.clientY - lastTouchY) * 1.5;
-          sendMouseMoveRel(dx, dy);
-          lastTouchX = t.clientX;
-          lastTouchY = t.clientY;
         }
       } else if (e.touches.length === 2) {
-        // Two-finger vertical scroll
         const currentY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
         const dy = (lastTouchY - currentY);
         sendMouseWheel(dy / 4);
@@ -386,40 +424,38 @@
     }, { passive: false });
 
     canvas.addEventListener("touchend", (e) => {
-      if (!isTouchDragging && performance.now() - touchStartTime < 300) {
-        // Quick tap: Left Click
+      if (!isDragging && performance.now() - touchStartTime < 250) {
         sendMouseButton(1, true);
         setTimeout(() => sendMouseButton(1, false), 50);
       }
-      isTouchDragging = false;
+      isDragging = false;
     });
 
-    // Virtual Trackpad Surface
+    // Virtual Trackpad Pad
     if (vmTouchpad) {
-      let vmLastX = 0;
-      let vmLastY = 0;
-
+      let vmX = 0;
+      let vmY = 0;
       vmTouchpad.addEventListener("touchstart", (e) => {
         if (e.touches.length > 0) {
-          vmLastX = e.touches[0].clientX;
-          vmLastY = e.touches[0].clientY;
+          vmX = e.touches[0].clientX;
+          vmY = e.touches[0].clientY;
         }
       }, { passive: true });
 
       vmTouchpad.addEventListener("touchmove", (e) => {
         e.preventDefault();
         if (e.touches.length > 0) {
-          const dx = (e.touches[0].clientX - vmLastX) * 1.8;
-          const dy = (e.touches[0].clientY - vmLastY) * 1.8;
+          const dx = (e.touches[0].clientX - vmX) * 1.8;
+          const dy = (e.touches[0].clientY - vmY) * 1.8;
           sendMouseMoveRel(dx, dy);
-          vmLastX = e.touches[0].clientX;
-          vmLastY = e.touches[0].clientY;
+          vmX = e.touches[0].clientX;
+          vmY = e.touches[0].clientY;
         }
       }, { passive: false });
     }
 
-    // On-Screen Buttons (LMB / RMB / Scroll)
-    function bindPressRelease(el, btnNum) {
+    // Touch Buttons
+    function bindPress(el, btnNum) {
       if (!el) return;
       const down = (e) => { e.preventDefault(); el.classList.add("active"); sendMouseButton(btnNum, true); };
       const up = (e) => { e.preventDefault(); el.classList.remove("active"); sendMouseButton(btnNum, false); };
@@ -429,20 +465,16 @@
       el.addEventListener("touchend", up, { passive: false });
     }
 
-    bindPressRelease(btnLMB, 1);
-    bindPressRelease(btnRMB, 3);
+    bindPress(btnLMB, 1);
+    bindPress(btnRMB, 3);
 
-    if (btnScrollUp) {
-      btnScrollUp.onclick = () => sendMouseWheel(-3);
-    }
-    if (btnScrollDown) {
-      btnScrollDown.onclick = () => sendMouseWheel(3);
-    }
+    if (btnScrollUp) btnScrollUp.onclick = () => sendMouseWheel(-3);
+    if (btnScrollDown) btnScrollDown.onclick = () => sendMouseWheel(3);
 
     if (btnToggleMouseMode) {
       btnToggleMouseMode.onclick = () => {
-        mouseMode = (mouseMode === "direct") ? "trackpad" : "direct";
-        btnToggleMouseMode.textContent = `Mode: ${mouseMode === "direct" ? "Direct Tap" : "Trackpad"}`;
+        mouseMode = (mouseMode === "trackpad") ? "direct" : "trackpad";
+        btnToggleMouseMode.textContent = `MODE: ${mouseMode.toUpperCase()}`;
         if (hudInput) hudInput.textContent = `Touch (${mouseMode})`;
       };
     }
@@ -460,32 +492,23 @@
   }
 
   // -------------------------------------------------------------
-  // 7. On-Screen Phone Keyboard & Text Drawer
+  // 7. Mobile Keyboard Trigger & Quick Input
   // -------------------------------------------------------------
-  function initKeyboardControls() {
-    function openKeyboard() {
-      // Focus hidden input to pop up phone's native virtual keyboard
+  function initKeyboard() {
+    function openMobileKeyboard() {
       mobileKeyboardInput.focus();
-      // Show text drawer
       mobileTextDrawer.style.display = "flex";
       mobileTextInput.focus();
     }
 
-    if (btnMobileKeyboard) {
-      btnMobileKeyboard.onclick = openKeyboard;
-    }
-
-    if (btnCloseTextDrawer) {
-      btnCloseTextDrawer.onclick = () => {
-        mobileTextDrawer.style.display = "none";
-      };
-    }
+    if (btnMobileKeyboard) btnMobileKeyboard.onclick = openMobileKeyboard;
+    if (btnCloseTextDrawer) btnCloseTextDrawer.onclick = () => { mobileTextDrawer.style.display = "none"; };
 
     if (btnSendText) {
       btnSendText.onclick = () => {
-        const txt = mobileTextInput.value;
-        if (txt) {
-          sendTypedString(txt);
+        const val = mobileTextInput.value;
+        if (val) {
+          sendTypedString(val);
           mobileTextInput.value = "";
         }
       };
@@ -508,14 +531,12 @@
         setTimeout(() => sendKeyEvent("Enter", false), 50);
       };
     }
-
     if (btnKeyEsc) {
       btnKeyEsc.onclick = () => {
         sendKeyEvent("Escape", true);
         setTimeout(() => sendKeyEvent("Escape", false), 50);
       };
     }
-
     if (btnKeyTab) {
       btnKeyTab.onclick = () => {
         sendKeyEvent("Tab", true);
@@ -523,17 +544,60 @@
       };
     }
 
-    // Intercept native keyboard keystrokes
-    mobileKeyboardInput.addEventListener("keydown", (e) => {
-      sendKeyEvent(e.code || e.key, true);
-    });
-    mobileKeyboardInput.addEventListener("keyup", (e) => {
-      sendKeyEvent(e.code || e.key, false);
-    });
+    mobileKeyboardInput.addEventListener("keydown", (e) => sendKeyEvent(e.code || e.key, true));
+    mobileKeyboardInput.addEventListener("keyup", (e) => sendKeyEvent(e.code || e.key, false));
   }
 
   // -------------------------------------------------------------
-  // 8. Fullscreen & Menu Controls
+  // 8. In-Game Settings Modal
+  // -------------------------------------------------------------
+  function initInGameSettings() {
+    if (btnOpenInGameSettings) {
+      btnOpenInGameSettings.onclick = () => {
+        inGameSettingsModal.style.display = "flex";
+      };
+    }
+    if (btnCloseInGameSettings) {
+      btnCloseInGameSettings.onclick = () => {
+        inGameSettingsModal.style.display = "none";
+      };
+    }
+
+    if (liveBitrateSlider && liveBitrateVal) {
+      liveBitrateSlider.value = localStorage.getItem("nebula_bitrate") || 15;
+      liveBitrateVal.textContent = `${liveBitrateSlider.value} Mbps`;
+      liveBitrateSlider.oninput = (e) => {
+        liveBitrateVal.textContent = `${e.target.value} Mbps`;
+        if (wsStream && wsStream.readyState === WebSocket.OPEN) {
+          wsStream.send(JSON.stringify({ bitrate_mbps: e.target.value }));
+        }
+      };
+    }
+
+    if (liveMouseSelect) {
+      liveMouseSelect.value = mouseMode;
+    }
+    if (liveQueueSelect) {
+      liveQueueSelect.value = queueMode;
+    }
+
+    if (btnApplyInGameSettings) {
+      btnApplyInGameSettings.onclick = () => {
+        mouseMode = liveMouseSelect.value;
+        queueMode = liveQueueSelect.value;
+        localStorage.setItem("nebula_mouse", mouseMode);
+        localStorage.setItem("nebula_queue", queueMode);
+        localStorage.setItem("nebula_bitrate", liveBitrateSlider.value);
+        if (hudInput) {
+          hudInput.textContent = (mouseMode === "locked") ? "Gaming Lock" : (isMobile ? `Touch (${mouseMode})` : "Desktop Absolute");
+        }
+        inGameSettingsModal.style.display = "none";
+      };
+    }
+  }
+
+  // -------------------------------------------------------------
+  // 9. Fullscreen & Navigation Handlers
   // -------------------------------------------------------------
   function toggleFullscreen() {
     const doc = window.document;
@@ -542,39 +606,33 @@
     const exit = doc.exitFullscreen || doc.mozCancelFullScreen || doc.webkitExitFullscreen || doc.msExitFullscreen;
 
     if (!doc.fullscreenElement && !doc.mozFullScreenElement && !doc.webkitFullscreenElement && !doc.msFullscreenElement) {
-      if (req) {
-        req.call(docEl).catch(() => {});
-      }
+      if (req) req.call(docEl).catch(() => {});
     } else {
-      if (exit) {
-        exit.call(doc);
-      }
+      if (exit) exit.call(doc);
     }
   }
 
-  document.getElementById("btnFullscreen").onclick = toggleFullscreen;
-  document.getElementById("btnToggleHud").onclick = () => {
-    hudOverlay.style.display = hudOverlay.style.display === "none" ? "flex" : "none";
-  };
-  document.getElementById("btnRelock").onclick = () => {
-    canvas.requestPointerLock();
-  };
-  document.getElementById("btnExit").onclick = () => {
-    window.location.href = "/";
-  };
-
+  if (btnFullscreen) btnFullscreen.onclick = toggleFullscreen;
+  if (btnRelock) btnRelock.onclick = lockMouseForGaming;
+  if (btnToggleHud) {
+    btnToggleHud.onclick = () => {
+      hudOverlay.style.display = hudOverlay.style.display === "none" ? "flex" : "none";
+    };
+  }
   if (btnToggleBar) {
     btnToggleBar.onclick = () => {
       playerControls.style.display = (playerControls.style.display === "none" || !playerControls.style.display) ? "flex" : "none";
     };
   }
+  if (btnExit) {
+    btnExit.onclick = () => { window.location.href = "/"; };
+  }
 
-  // -------------------------------------------------------------
-  // 9. Startup
-  // -------------------------------------------------------------
+  // Startup execution
   initVideoDecoder();
   connectStream();
-  initDesktopInputs();
+  initMouseAndKeyboard();
   initMobileTouch();
-  initKeyboardControls();
+  initKeyboard();
+  initInGameSettings();
 })();

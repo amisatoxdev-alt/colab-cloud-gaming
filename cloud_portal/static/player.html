@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Streaming - Nebula Cloud Gaming</title>
+  <title>XGS Streaming • Xyris Cloud Gaming</title>
   <link rel="stylesheet" href="/static/css/portal.css">
   <style>
     body, html {
@@ -12,7 +12,7 @@
       width: 100%;
       height: 100%;
       overflow: hidden;
-      background: #000;
+      background: #000000;
       user-select: none;
       -webkit-user-select: none;
       touch-action: none;
@@ -22,68 +22,114 @@
 <body>
 
   <div class="player-container" id="playerContainer">
-    <!-- Live Video Canvas -->
+    <!-- Hardware Canvas Rendering -->
     <canvas id="streamCanvas" width="1368" height="768"></canvas>
 
-    <!-- Floating Performance HUD -->
+    <!-- Real-Time Performance HUD -->
     <div class="hud-overlay" id="hudOverlay">
       <div class="hud-item">FPS: <span id="hudFps">--</span></div>
       <div class="hud-item">Ping: <span id="hudPing">-- ms</span></div>
       <div class="hud-item">Bitrate: <span id="hudBitrate">-- Mbps</span></div>
       <div class="hud-item">Codec: <span id="hudCodec">H.264 ULL</span></div>
-      <div class="hud-item">Mode: <span id="hudInput">Touch</span></div>
+      <div class="hud-item">Mouse: <span id="hudInput">Gaming Lock</span></div>
     </div>
 
-    <!-- Toggle Controls Pill (Mobile & Desktop) -->
+    <!-- Toggle Controls Pill (Mobile & Small screens) -->
     <button class="controls-toggle-pill" id="btnToggleBar" title="Toggle Controls">
-      ⚙️ Menu
+      ⚙️ CONTROLS
     </button>
 
-    <!-- Top Floating Control Bar -->
+    <!-- Top Floating Controls Toolbar (Sharp Industrial Styling) -->
     <div class="player-controls" id="playerControls">
-      <button class="ctrl-btn" id="btnFullscreen" title="Toggle Fullscreen">⛶ Fullscreen</button>
-      <button class="ctrl-btn" id="btnVirtualMouse" title="Toggle On-Screen Mouse">🖱️ Mouse</button>
-      <button class="ctrl-btn" id="btnMobileKeyboard" title="Open Phone Keyboard">⌨️ Keyboard</button>
-      <button class="ctrl-btn" id="btnToggleHud" title="Toggle Stats HUD">📊 Stats</button>
-      <button class="ctrl-btn" id="btnRelock" title="Capture / Lock Mouse (PC)">🔒 Lock</button>
-      <button class="ctrl-btn" id="btnSound" title="Toggle Audio">🔊 Sound</button>
-      <button class="ctrl-btn exit" id="btnExit" title="Exit Stream">✕ Exit</button>
+      <button class="ctrl-btn" id="btnRelock" title="Gaming Lock Mouse (Raw 3D Pointer Lock for GTA V & FPS)">🔒 LOCK MOUSE</button>
+      <button class="ctrl-btn" id="btnFullscreen" title="Toggle Native Fullscreen">⛶ FULLSCREEN</button>
+      <button class="ctrl-btn" id="btnVirtualMouse" title="Toggle On-Screen Touch Mouse">🖱️ V-MOUSE</button>
+      <button class="ctrl-btn" id="btnMobileKeyboard" title="Open Native Phone Keyboard">⌨️ KEYBOARD</button>
+      <button class="ctrl-btn" id="btnOpenInGameSettings" title="In-Game Stream Settings">⚙️ SETTINGS</button>
+      <button class="ctrl-btn" id="btnToggleHud" title="Toggle Stats HUD">📊 STATS</button>
+      <button class="ctrl-btn" id="btnSound" title="Toggle Audio Playback">🔊 AUDIO</button>
+      <button class="ctrl-btn exit" id="btnExit" title="Exit to Game Lobby">✕ EXIT</button>
     </div>
 
-    <!-- Hidden native keyboard trigger input -->
+    <!-- Hidden native keyboard trigger input for mobile phones -->
     <input type="text" id="mobileKeyboardInput" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" style="position: fixed; opacity: 0; pointer-events: none; left: -9999px; top: -9999px;">
 
-    <!-- Mobile Quick Text Input Drawer (pops up when keyboard active) -->
+    <!-- Mobile Quick Text Input Drawer -->
     <div class="mobile-text-drawer" id="mobileTextDrawer">
       <input type="text" id="mobileTextInput" placeholder="Type text to send to Cloud PC..." autocomplete="off">
-      <button class="text-send-btn" id="btnSendText">Send</button>
-      <button class="text-key-btn" id="btnKeyEnter">Enter ↵</button>
-      <button class="text-key-btn" id="btnKeyEsc">Esc</button>
-      <button class="text-key-btn" id="btnKeyTab">Tab</button>
+      <button class="text-send-btn" id="btnSendText">SEND</button>
+      <button class="text-key-btn" id="btnKeyEnter">ENTER ↵</button>
+      <button class="text-key-btn" id="btnKeyEsc">ESC</button>
+      <button class="text-key-btn" id="btnKeyTab">TAB</button>
       <button class="text-close-btn" id="btnCloseTextDrawer">✕</button>
     </div>
 
     <!-- On-Screen Virtual Mouse & Trackpad Overlay -->
     <div class="virtual-mouse-overlay" id="virtualMouseOverlay">
       <div class="vm-header">
-        <span class="vm-title">🖱️ On-Screen Mouse</span>
-        <button class="vm-mode-btn" id="btnToggleMouseMode">Mode: Trackpad</button>
+        <span class="vm-title">🖱️ ON-SCREEN MOUSE</span>
+        <button class="vm-mode-btn" id="btnToggleMouseMode">MODE: TRACKPAD</button>
         <button class="vm-close-btn" id="btnCloseVirtualMouse">✕</button>
       </div>
 
-      <!-- Touch Surface (for smooth trackpad motion) -->
+      <!-- Touch Surface for thumb dragging -->
       <div class="vm-touchpad" id="vmTouchpad">
-        <span>Drag finger to move cursor</span>
+        <span>DRAG FINGER TO MOVE CURSOR</span>
       </div>
 
-      <!-- On-Screen Mouse Buttons -->
+      <!-- On-Screen Hardware Mouse Click Buttons -->
       <div class="vm-buttons">
         <button class="vm-btn lmb" id="btnLMB">LEFT CLICK</button>
         <div class="vm-scroll-col">
-          <button class="vm-btn sm" id="btnScrollUp">▲ Up</button>
-          <button class="vm-btn sm" id="btnScrollDown">▼ Down</button>
+          <button class="vm-btn sm" id="btnScrollUp">▲ UP</button>
+          <button class="vm-btn sm" id="btnScrollDown">▼ DOWN</button>
         </div>
         <button class="vm-btn rmb" id="btnRMB">RIGHT CLICK</button>
+      </div>
+    </div>
+
+    <!-- In-Game Settings Modal -->
+    <div class="settings-modal" id="inGameSettingsModal">
+      <div class="settings-box">
+        <div class="settings-header">
+          <span class="settings-title">⚙️ LIVE STREAM SETTINGS</span>
+          <button class="settings-close-btn" id="btnCloseInGameSettings">✕</button>
+        </div>
+
+        <div class="settings-group">
+          <label class="settings-label">
+            LIVE BITRATE STREAM LIMIT
+            <span id="liveBitrateVal">15 Mbps</span>
+          </label>
+          <input type="range" class="settings-range" id="liveBitrateSlider" min="5" max="40" step="1" value="15">
+        </div>
+
+        <div class="settings-group">
+          <label class="settings-label">
+            MOUSE CONTROL MODE
+            <span>INPUT METHOD</span>
+          </label>
+          <select class="settings-select" id="liveMouseSelect">
+            <option value="locked" selected>🔒 Gaming Pointer Lock (Raw 3D FPS Mouse for GTA V / 3D Games)</option>
+            <option value="absolute">Absolute Desktop Pointer (Desktop Navigation)</option>
+            <option value="touch">Touch & Virtual Trackpad (Mobile Phone Controls)</option>
+          </select>
+        </div>
+
+        <div class="settings-group">
+          <label class="settings-label">
+            FRAME QUEUE BUFFER
+            <span>LATENCY</span>
+          </label>
+          <select class="settings-select" id="liveQueueSelect">
+            <option value="zero" selected>Zero Frame Queue (Absolute Lowest Latency • No Buffer)</option>
+            <option value="smooth">1-Frame Smooth Buffer</option>
+          </select>
+        </div>
+
+        <div class="settings-actions">
+          <button class="btn-primary" id="btnApplyInGameSettings" style="width: 100%;">APPLY SETTINGS</button>
+        </div>
       </div>
     </div>
   </div>

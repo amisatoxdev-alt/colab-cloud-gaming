@@ -30,7 +30,7 @@ async def run_tests():
             async with session.get(f"{BASE_URL}/") as resp:
                 assert resp.status == 200, f"Expected 200, got {resp.status}"
                 text = await resp.text()
-                assert "NEBULA CLOUD GAMING" in text, "Missing title in index.html"
+                assert "XYRIS CLOUD GAMING" in text, "Missing title in index.html"
                 assert "Windows 11 Fluent Desktop" in text, "Missing Win11 card in index.html"
                 print("  [PASS] GET / -> 200 OK (Valid HTML & Lobby)")
         except Exception as e:
