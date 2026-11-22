@@ -10,7 +10,7 @@ links = {
     "sunshine_creds": "admin / Sunshine123!",
     "tailscale_ip": "",
     "sunshine_direct_tailscale": "Authorize Tailscale",
-    "tailscale_login_url": "Check 'tailscale status'"
+    "tailscale_login_url": ""
 }
 
 # 1. Read existing links file if present
@@ -34,6 +34,9 @@ try:
     if ts_ip and not any(err in ts_ip for err in ["failed", "error", "Tailscale", "127.0.0.1"]):
         links["tailscale_ip"] = ts_ip
         links["sunshine_direct_tailscale"] = f"https://{ts_ip}:47990"
+        # An authorized node has nothing to authorize: clear any placeholder so
+        # the launcher never treats a healthy node as "waiting for login".
+        links["tailscale_login_url"] = ""
     else:
         # Check if there is an active login URL. NEVER pass --reset here: it
         # discards the stored node identity and forces an already authenticated
