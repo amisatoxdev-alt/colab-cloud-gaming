@@ -115,10 +115,25 @@ for key, val in [
 ]:
     subprocess.run(f"sysctl -w {key}={val} 2>/dev/null || true", shell=True)
 
-# User permissions & input group
+# User permissions, passwords & passwordless sudo
+run("echo 'root:123456' | chpasswd", check=False)
 run("groupadd -f input", check=False)
 run("id -u user >/dev/null 2>&1 || (useradd -m -s /bin/bash user && echo 'user:123456' | chpasswd)", check=False)
+run("echo 'user:123456' | chpasswd", check=False)
 run("usermod -aG sudo,video,audio,input user", check=False)
+run("mkdir -p /etc/sudoers.d && echo 'user ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/99-user-nopasswd && chmod 0440 /etc/sudoers.d/99-user-nopasswd", check=False)
+
+# Polkit global allow rule for seamless GUI installations (gdebi, synaptic, etc.)
+os.makedirs("/etc/polkit-1/rules.d", exist_ok=True)
+with open("/etc/polkit-1/rules.d/49-nopasswd_global.rules", "w") as f:
+    f.write("""/* Allow user and root full administrative access without password prompts */
+polkit.addRule(function(action, subject) {
+    if (subject.isInGroup("sudo") || subject.user == "user" || subject.user == "root") {
+        return polkit.Result.YES;
+    }
+});
+""")
+os.chmod("/etc/polkit-1/rules.d/49-nopasswd_global.rules", 0o644)
 
 # Enforce pure Xorg XTest by removing uinput character devices
 run("rm -rf /dev/uinput /dev/input /dev/uhid /usr/local/lib/libselective_uinput.so", check=False)
@@ -230,6 +245,7 @@ pkgs = [
     "ffmpeg", "libva2", "net-tools", "iproute2", "steam:i386", "tailscale", "tailscale-archive-keyring",
     "libxtst6", "libx11-6", "xdotool",
     "xfce4-taskmanager", "gnome-system-monitor", "htop", "btop",
+    "gdebi", "xfce4-terminal", "lxpolkit", "libfm-modules", "libfm-tools", "shared-mime-info",
     "libxtst6:i386", "libxrandr2:i386", "libxrender1:i386", "libgtk2.0-0t64:i386",
     "libpipewire-0.3-0t64:i386", "libpulse0:i386", "libgdk-pixbuf-2.0-0:i386",
     "libxcb-res0:i386", "libvdpau1:i386", "libbz2-1.0:i386", "dbus-x11",
@@ -318,7 +334,8 @@ shortcuts = {
     ),
     "terminal.desktop": (
         "[Desktop Entry]\nVersion=1.0\nName=Terminal\n"
-        "Exec=xterm -fa 'Monospace' -fs 11 -bg '#1e1e1e' -fg '#ffffff'\nIcon=utilities-terminal\nTerminal=false\nType=Application\n"
+        "Comment=Open modern terminal with right-click Copy/Paste\n"
+        "Exec=xfce4-terminal\nIcon=utilities-terminal\nTerminal=false\nType=Application\nCategories=System;TerminalEmulator;\n"
     ),
     "recycle_bin.desktop": (
         "[Desktop Entry]\nVersion=1.0\nName=Recycle Bin\n"
@@ -539,6 +556,76 @@ for xs_dir in ["/home/user/.config/xsettingsd", "/root/.config/xsettingsd"]:
     os.makedirs(xs_dir, exist_ok=True)
     with open(f"{xs_dir}/xsettingsd.conf", "w") as f:
         f.write('Net/ThemeName "Windows-11"\nNet/IconThemeName "Papirus"\nGtk/CursorThemeName "Adwaita"\nGtk/FontName "Segoe UI 10"\nXft/Antialias 1\nXft/Hinting 1\nXft/HintStyle "hintslight"\nXft/RGBA "rgb"\n')
+
+# Configure xfce4-terminal dark theme with right-click Copy/Paste
+for t_dir in ["/home/user/.config/xfce4/terminal", "/root/.config/xfce4/terminal"]:
+    os.makedirs(t_dir, exist_ok=True)
+    with open(f"{t_dir}/terminalrc", "w") as f:
+        f.write('[Configuration]\nFontName=Monospace 11\nColorForeground=#ffffff\nColorBackground=#18181a\nColorCursor=#0078d4\nMiscAlwaysShowTabs=FALSE\nMiscBell=FALSE\nMiscConfirmClose=FALSE\nMiscCursorBlinks=TRUE\nMiscCursorShape=TERMINAL_CURSOR_SHAPE_IBEAM\nMiscDefaultGeometry=100x28\nMiscInheritGeometry=FALSE\nMiscMenubarDefault=FALSE\nMiscMouseAutohide=TRUE\nMiscToolbarDefault=FALSE\nScrollingLines=10000\n')
+run("chown -R user:user /home/user/.config/xfce4 2>/dev/null || true", check=False)
+run("update-alternatives --set x-terminal-emulator /usr/bin/xfce4-terminal.wrapper 2>/dev/null || true", check=False)
+
+# Configure Linux Package Installer (.deb GUI & Direct Install actions)
+with open("/usr/share/applications/linux-package-installer.desktop", "w") as f:
+    f.write('[Desktop Entry]\nVersion=1.0\nName=Linux Package Installer\nGenericName=Package Installer\nComment=Install and view Debian software packages (.deb)\nExec=gdebi-gtk %f\nIcon=system-software-install\nTerminal=false\nType=Application\nCategories=System;PackageManager;\nMimeType=application/vnd.debian.binary-package;application/x-deb;application/x-debian-package;\nKeywords=package;apt;dpkg;install;deb;\nStartupNotify=true\nNoDisplay=false\n')
+
+with open("/usr/local/bin/direct-deb-installer", "w") as f:
+    f.write('''#!/bin/bash
+DEB="$1"
+if [ -z "$DEB" ] || [ ! -f "$DEB" ]; then
+    exit 1
+fi
+xfce4-terminal --title="Installing $(basename "$DEB")" --geometry=80x24 -e "bash -c 'echo \\"=== Installing: $DEB ===\\"; echo \\"\\"; sudo apt-get update -qq; sudo apt-get install -y \\"$DEB\\"; echo \\"\\"; echo \\"=== Installation Complete! ===\\"; echo \\"Press Enter or close this window to exit.\\"; read -r'"
+''')
+run("chmod +x /usr/local/bin/direct-deb-installer", check=False)
+
+for act_dir in ["/usr/share/file-manager/actions", "/home/user/.local/share/file-manager/actions"]:
+    os.makedirs(act_dir, exist_ok=True)
+    with open(f"{act_dir}/install-deb.desktop", "w") as f:
+        f.write('[Desktop Entry]\nType=Action\nName=Install Package\nName[en]=Install Package\nTooltip=Install this package directly\nIcon=system-software-install\nProfiles=install_profile;\n\n[X-Action-Profile install_profile]\nMimeTypes=application/vnd.debian.binary-package;application/x-deb;application/x-debian-package;\nBasenames=*.deb;*.DEB;\nExec=/usr/local/bin/direct-deb-installer %f\n')
+    with open(f"{act_dir}/open-with-installer.desktop", "w") as f:
+        f.write('[Desktop Entry]\nType=Action\nName=Open with Linux Package Installer\nName[en]=Open with Linux Package Installer\nTooltip=Open in GUI Package Installer\nIcon=system-software-install\nProfiles=gdebi_profile;\n\n[X-Action-Profile gdebi_profile]\nMimeTypes=application/vnd.debian.binary-package;application/x-deb;application/x-debian-package;\nBasenames=*.deb;*.DEB;\nExec=gdebi-gtk %f\n')
+    run(f"chmod 644 '{act_dir}'/*.desktop 2>/dev/null || true", check=False)
+    run(f"chown -R user:user '{act_dir}' 2>/dev/null || true", check=False)
+
+# Configure default MIME associations for .deb packages
+for m_path in ["/home/user/.config/mimeapps.list", "/root/.config/mimeapps.list", "/etc/xdg/mimeapps.list"]:
+    os.makedirs(os.path.dirname(m_path), exist_ok=True)
+    m_lines = []
+    if os.path.exists(m_path):
+        try:
+            m_lines = [l.strip() for l in open(m_path, encoding="utf-8", errors="ignore")]
+        except Exception:
+            m_lines = []
+    m_lines = [l for l in m_lines if not any(k in l for k in ("application/vnd.debian.binary-package", "application/x-deb", "application/x-debian-package"))]
+    deb_defs = [
+        "application/vnd.debian.binary-package=linux-package-installer.desktop;gdebi.desktop;",
+        "application/x-deb=linux-package-installer.desktop;gdebi.desktop;",
+        "application/x-debian-package=linux-package-installer.desktop;gdebi.desktop;"
+    ]
+    def_idx = next((i for i, l in enumerate(m_lines) if l == "[Default Applications]"), -1)
+    if def_idx != -1:
+        for idx, entry in enumerate(deb_defs):
+            m_lines.insert(def_idx + 1 + idx, entry)
+    else:
+        m_lines.append("[Default Applications]")
+        m_lines.extend(deb_defs)
+    add_idx = next((i for i, l in enumerate(m_lines) if l == "[Added Associations]"), -1)
+    if add_idx != -1:
+        for idx, entry in enumerate(deb_defs):
+            m_lines.insert(add_idx + 1 + idx, entry)
+    else:
+        m_lines.append("[Added Associations]")
+        m_lines.extend(deb_defs)
+    try:
+        with open(m_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(m_lines) + "\n")
+    except Exception:
+        pass
+
+run("update-desktop-database /usr/share/applications 2>/dev/null || true", check=False)
+run("update-mime-database /usr/share/mime 2>/dev/null || true", check=False)
+run("chown -R user:user /home/user/.config 2>/dev/null || true", check=False)
 
 # Configure Openbox rc.xml
 # ---------------------------------------------------------------------------
@@ -764,6 +851,7 @@ if desktop_mode == "win11":
                     f"xrandr --output DVI-D-0 --mode {DESKTOP_RES}\n"
                     "xsettingsd &\n"
                     f"feh --bg-fill {wallpaper_file} &\n"
+                    "lxpolkit &\n"
                     "pcmanfm --desktop &\n"
                     "picom -b --corner-radius 8 &\n"
                     "tint2 &\n")
@@ -784,9 +872,10 @@ if desktop_mode == "win11":
     run('DISPLAY=:1 xset r rate 250 30 >/dev/null 2>&1 || true', check=False)
     run(f'su - user -c "DISPLAY=:1 nohup feh --bg-fill {wallpaper_file} > /home/user/feh.log 2>&1 < /dev/null &"', check=False)
     run(f'DISPLAY=:1 nohup feh --bg-fill {wallpaper_file} > /tmp/feh_root.log 2>&1 < /dev/null', check=False)
-    run(f'su - user -c "{openbox_env} nohup pcmanfm --desktop > /home/user/pcmanfm.log 2>&1 &"', check=False)
+    run(f'su - user -c "{openbox_env} nohup lxpolkit >/dev/null 2>&1 < /dev/null &"', check=False)
+    run(f'su - user -c "{openbox_env} nohup pcmanfm --desktop > /home/user/pcmanfm.log 2>&1 < /dev/null &"', check=False)
     run(f'su - user -c "{openbox_env} nohup picom -b --corner-radius 8 >/dev/null 2>&1 &"', check=False)
-    run(f'su - user -c "{openbox_env} nohup tint2 > /home/user/tint2.log 2>&1 &"', check=False)
+    run(f'su - user -c "{openbox_env} nohup tint2 > /home/user/tint2.log 2>&1 < /dev/null &"', check=False)
 else:
     log("Deploying Pure Game Mode (No Desktop - Maximum FPS & Zero Overhead)...")
     for ob_dir in ["/home/user/.config/openbox", "/root/.config/openbox"]:
