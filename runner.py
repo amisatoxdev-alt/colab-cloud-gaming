@@ -834,16 +834,37 @@ def get_links(verbose=False):
                 pass
         return {}
 
+def _ts_probe_ip(out):
+    """Extract the node IP from a check_ts.py run, or '' if not authorized.
+
+    check_ts.py emits a machine-readable JSON line first:
+        {"status": "AUTHORIZED", "ip": "100.x.y.z", "login_url": ""}
+    The old code grabbed "the first line after STATUS:AUTHORIZED" as the IP,
+    which after the JSON was added returned the literal text `{"status":` and
+    printed it as the node IP in the dashboard. Parse the JSON; only fall back
+    to a bare-IP scan if the JSON is missing.
+    """
+    for line in (out or "").splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            data = json.loads(line)
+        except Exception:
+            continue
+        if data.get("status") == "AUTHORIZED" and data.get("ip"):
+            return data["ip"]
+    m = re.search(r"\b(10[0-9]\.\d{1,3}\.\d{1,3}\.\d{1,3})\b", out or "")
+    return m.group(1) if m else ""
+
+
 def check_and_wait_tailscale(ts_login_url):
     print(f"\n{C_CYAN}--- TAILSCALE MESH NETWORK STATUS ---{C_RESET}")
     res = run_exec("-f check_ts.py", idle_timeout=30)
 
     out = res.stdout or ""
-    if "STATUS:AUTHORIZED" in out:
-        lines = out.replace("STATUS:AUTHORIZED", "").strip().split("\n")
-        first_line = lines[0] if lines else ""
-        parts = first_line.split()
-        ip = parts[0] if parts else "100.x.y.z"
+    ip = _ts_probe_ip(out)
+    if ip:
         log_ok(f"Tailscale is AUTHORIZED! Colab Node IP: {C_GREEN}{C_BOLD}{ip}{C_RESET}")
         return ip
 
@@ -870,11 +891,8 @@ def check_and_wait_tailscale(ts_login_url):
     while time.time() < deadline:
         time.sleep(5)
         res = run_exec("-f check_ts.py", idle_timeout=25, retry_on_timeout=True)
-        if "STATUS:AUTHORIZED" in (res.stdout or ""):
-            lines = res.stdout.replace("STATUS:AUTHORIZED", "").strip().split("\n")
-            first_line = lines[0] if lines else ""
-            parts = first_line.split()
-            ip = parts[0] if parts else "100.x.y.z"
+        ip = _ts_probe_ip(res.stdout or "")
+        if ip:
             print(f"\n{C_GREEN}[✓] Authorized! Node IP: {C_BOLD}{ip}{C_RESET}")
             return ip
         if res.returncode == 124:
@@ -892,7 +910,12 @@ def make_card_row(label, val, val_color=C_WHITE, max_len=62):
 
 def print_dashboard(links, ts_ip=None):
     ts_display = ts_ip if ts_ip else links.get('tailscale_ip', 'Not Linked')
-    if ts_display and ts_display not in ("127.0.0.1", "Not Linked"):
+    # Only accept a real Tailscale CGNAT address. Anything else (a JSON fragment,
+    # a placeholder sentence, a localhost IP) is shown as "not linked" instead of
+    # being pasted into the Sunshine URL.
+    if not re.fullmatch(r"100\.\d{1,3}\.\d{1,3}\.\d{1,3}", str(ts_display or "")):
+        ts_display = "Not Linked"
+    if ts_display != "Not Linked":
         sunshine_ts = f"https://{ts_display}:47990"
     else:
         sunshine_ts = "Enable via /tailscale"

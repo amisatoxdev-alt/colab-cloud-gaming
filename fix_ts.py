@@ -48,7 +48,11 @@ def ts_json(t=8):
 
 
 def supervisor_count():
-    out = subprocess.run("pgrep -fc TS_DEBUG_ALWAYS_USE_DERP || true", shell=True,
+    # The pattern is written with a bracket class ([T]S...) so pgrep's own
+    # command line -- which contains the literal pattern -- does not match
+    # itself. Without this the count is always at least one too high, which
+    # made a perfectly healthy single-daemon state look like a duplicate.
+    out = subprocess.run("pgrep -fc '[T]S_DEBUG_ALWAYS_USE_DERP' || true", shell=True,
                          text=True, capture_output=True).stdout.strip()
     return int(out or 0) if out.isdigit() else 0
 
@@ -216,3 +220,4 @@ if funnel_url:
 
 print("TAILSCALE_OK" if ts_json(6).get("BackendState") == "Running" else "TAILSCALE_NEEDS_LOGIN",
       flush=True)
+

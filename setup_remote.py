@@ -776,7 +776,13 @@ with open("/etc/X11/xorg.conf", "w") as f:
 # 5. Starting All Services (Xorg, PulseAudio, Openbox, Tailscale, MoonlightWeb)
 # -------------------------------------------------------------
 log("Starting display, audio, and background daemons...")
-subprocess.run("pkill -9 -f portal_server.py 2>/dev/null || true; killall -9 Xorg Xvfb x11vnc openbox sunshine cloudflared MoonlightWeb tailscaled 2>/dev/null || true", shell=True)
+subprocess.run("pkill -9 -f portal_server.py 2>/dev/null || true", shell=True)
+# `killall -9 tint2` exists for the same reason as the tailscaled loop below:
+# tint2 has no singleton lock, so each re-deploy left another panel stacked on
+# top of the last one. The taskbar you clicked was the bottom-most copy.
+subprocess.run("killall -9 tint2 picom pcmanfm lxpolkit 2>/dev/null || true", shell=True)
+subprocess.run("killall -9 Xorg Xvfb x11vnc openbox sunshine cloudflared MoonlightWeb "
+               "tailscaled 2>/dev/null || true", shell=True)
 # The tailscaled supervisor is a `bash -c "while true; ..."` loop -- killall never
 # matches it, so leftovers accumulate and fight over the daemon socket.
 subprocess.run("pkill -9 -f 'TS_DEBUG_ALWAYS_USE_DERP' 2>/dev/null || true", shell=True)
