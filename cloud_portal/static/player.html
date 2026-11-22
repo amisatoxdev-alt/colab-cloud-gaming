@@ -17,38 +17,55 @@
       -webkit-user-select: none;
       touch-action: none;
     }
+
+    /* Small subtle gear icon in the top right */
+    .btn-settings-gear {
+      position: absolute;
+      top: 14px;
+      right: 14px;
+      width: 36px;
+      height: 36px;
+      background: rgba(10, 10, 10, 0.7);
+      backdrop-filter: blur(8px);
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      color: #ffffff;
+      font-size: 1.1rem;
+      cursor: pointer;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      z-index: 100;
+      transition: all 0.15s ease-in-out;
+      opacity: 0.6;
+    }
+
+    .btn-settings-gear:hover, .btn-settings-gear:active {
+      opacity: 1;
+      background: #ffffff;
+      color: #000000;
+      border-color: #ffffff;
+    }
   </style>
 </head>
 <body>
 
   <div class="player-container" id="playerContainer">
-    <!-- Hardware Canvas Rendering -->
+    <!-- Live Video Canvas -->
     <canvas id="streamCanvas" width="1368" height="768"></canvas>
 
-    <!-- Real-Time Performance HUD -->
-    <div class="hud-overlay" id="hudOverlay">
+    <!-- Client-Side Cursor Dot Indicator for Touch/Mobile -->
+    <div class="client-cursor-dot" id="clientCursorDot"></div>
+
+    <!-- Small Subtle Settings Icon (Single button, no long menu!) -->
+    <button class="btn-settings-gear" id="btnSettingsGear" title="Settings">⚙️</button>
+
+    <!-- Minimal Stats HUD (Toggleable) -->
+    <div class="hud-overlay" id="hudOverlay" style="display: none;">
       <div class="hud-item">FPS: <span id="hudFps">--</span></div>
       <div class="hud-item">Ping: <span id="hudPing">-- ms</span></div>
       <div class="hud-item">Bitrate: <span id="hudBitrate">-- Mbps</span></div>
-      <div class="hud-item">Codec: <span id="hudCodec">H.264 ULL</span></div>
-      <div class="hud-item">Mouse: <span id="hudInput">Gaming Lock</span></div>
-    </div>
-
-    <!-- Toggle Controls Pill (Mobile & Small screens) -->
-    <button class="controls-toggle-pill" id="btnToggleBar" title="Toggle Controls">
-      ⚙️ CONTROLS
-    </button>
-
-    <!-- Top Floating Controls Toolbar (Sharp Industrial Styling) -->
-    <div class="player-controls" id="playerControls">
-      <button class="ctrl-btn" id="btnRelock" title="Gaming Lock Mouse (Raw 3D Pointer Lock for GTA V & FPS)">🔒 LOCK MOUSE</button>
-      <button class="ctrl-btn" id="btnFullscreen" title="Toggle Native Fullscreen">⛶ FULLSCREEN</button>
-      <button class="ctrl-btn" id="btnVirtualMouse" title="Toggle On-Screen Touch Mouse">🖱️ V-MOUSE</button>
-      <button class="ctrl-btn" id="btnMobileKeyboard" title="Open Native Phone Keyboard">⌨️ KEYBOARD</button>
-      <button class="ctrl-btn" id="btnOpenInGameSettings" title="In-Game Stream Settings">⚙️ SETTINGS</button>
-      <button class="ctrl-btn" id="btnToggleHud" title="Toggle Stats HUD">📊 STATS</button>
-      <button class="ctrl-btn" id="btnSound" title="Toggle Audio Playback">🔊 AUDIO</button>
-      <button class="ctrl-btn exit" id="btnExit" title="Exit to Game Lobby">✕ EXIT</button>
+      <div class="hud-item">Sound: <span id="hudAudio">Active (48kHz)</span></div>
+      <div class="hud-item">Mouse: <span id="hudInput">Client Cursor</span></div>
     </div>
 
     <!-- Hidden native keyboard trigger input for mobile phones -->
@@ -64,7 +81,7 @@
       <button class="text-close-btn" id="btnCloseTextDrawer">✕</button>
     </div>
 
-    <!-- On-Screen Virtual Mouse & Trackpad Overlay -->
+    <!-- On-Screen Virtual Mouse & Trackpad Overlay (Toggleable from settings) -->
     <div class="virtual-mouse-overlay" id="virtualMouseOverlay">
       <div class="vm-header">
         <span class="vm-title">🖱️ ON-SCREEN MOUSE</span>
@@ -88,47 +105,69 @@
       </div>
     </div>
 
-    <!-- In-Game Settings Modal -->
+    <!-- In-Game Settings Modal (Opens when clicking ⚙️ gear icon) -->
     <div class="settings-modal" id="inGameSettingsModal">
       <div class="settings-box">
         <div class="settings-header">
-          <span class="settings-title">⚙️ LIVE STREAM SETTINGS</span>
+          <span class="settings-title">⚙️ STREAM & CONTROLS</span>
           <button class="settings-close-btn" id="btnCloseInGameSettings">✕</button>
         </div>
 
-        <div class="settings-group">
-          <label class="settings-label">
-            LIVE BITRATE STREAM LIMIT
-            <span id="liveBitrateVal">15 Mbps</span>
-          </label>
-          <input type="range" class="settings-range" id="liveBitrateSlider" min="5" max="40" step="1" value="15">
+        <!-- Quick Action Buttons Grid (Compact & Responsive) -->
+        <div class="settings-actions-grid">
+          <button class="btn-subtle" id="btnRelock">🔒 LOCK (FPS)</button>
+          <button class="btn-subtle" id="btnFullscreen">⛶ FULLSCREEN</button>
+          <button class="btn-subtle" id="btnMobileKeyboard">⌨️ KEYBOARD</button>
+          <button class="btn-subtle" id="btnVirtualMouse">🖱️ VIRTUAL PAD</button>
+          <button class="btn-subtle" id="btnToggleHud">📊 STATS HUD</button>
+          <button class="btn-subtle" id="btnToggleSound">🔊 AUDIO (ON)</button>
         </div>
 
         <div class="settings-group">
           <label class="settings-label">
-            MOUSE CONTROL MODE
-            <span>INPUT METHOD</span>
+            LIVE BITRATE TARGET
+            <span id="liveBitrateVal">4 Mbps (Ultra-Low Latency)</span>
+          </label>
+          <input type="range" class="settings-range" id="liveBitrateSlider" min="1" max="25" step="1" value="4">
+        </div>
+
+        <div class="settings-group">
+          <label class="settings-label">
+            MOUSE CONTROL METHOD
+            <span>INPUT</span>
           </label>
           <select class="settings-select" id="liveMouseSelect">
-            <option value="locked" selected>🔒 Gaming Pointer Lock (Raw 3D FPS Mouse for GTA V / 3D Games)</option>
-            <option value="absolute">Absolute Desktop Pointer (Desktop Navigation)</option>
-            <option value="touch">Touch & Virtual Trackpad (Mobile Phone Controls)</option>
+            <option value="client" selected>🖱️ Client-Side Mouse (Visible Cursor • Recommended)</option>
+            <option value="locked">🔒 3D Gaming Lock (FPS Camera / PointerLock)</option>
+            <option value="trackpad">📱 Mobile Touch Trackpad</option>
           </select>
         </div>
 
         <div class="settings-group">
           <label class="settings-label">
-            FRAME QUEUE BUFFER
-            <span>LATENCY</span>
+            VIDEO CODEC & DECODER
+            <span id="liveCodecVal">H.264 ULL</span>
+          </label>
+          <select class="settings-select" id="liveCodecSelect">
+            <option value="h264" selected>H.264 (Hardware NVENC • Sub-1ms Decode)</option>
+            <option value="av1">AV1 (Hardware NVENC • Next-Gen)</option>
+          </select>
+        </div>
+
+        <div class="settings-group">
+          <label class="settings-label">
+            QUEUE LATENCY MODE
+            <span>ANTI-LAG</span>
           </label>
           <select class="settings-select" id="liveQueueSelect">
-            <option value="zero" selected>Zero Frame Queue (Absolute Lowest Latency • No Buffer)</option>
+            <option value="zero" selected>Zero-Queue Anti-Lag (Drop Late Frames • ~100ms Ping)</option>
             <option value="smooth">1-Frame Smooth Buffer</option>
           </select>
         </div>
 
-        <div class="settings-actions">
-          <button class="btn-primary" id="btnApplyInGameSettings" style="width: 100%;">APPLY SETTINGS</button>
+        <div class="settings-actions" style="justify-content: space-between;">
+          <button class="btn-subtle exit" id="btnExit" style="border-color: #ff3333; color: #ff5555; padding: 0.5rem 1rem;">✕ EXIT</button>
+          <button class="btn-primary" id="btnApplyInGameSettings" style="padding: 0.5rem 1.25rem;">RESUME</button>
         </div>
       </div>
     </div>

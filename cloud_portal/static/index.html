@@ -1,12 +1,15 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>XGS • Xyris Cloud Gaming (Beta)</title>
   <link rel="stylesheet" href="/static/css/portal.css">
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23ffffff'><path d='M21 6H3c-1.1 0-2 .9-2 2v8c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm-10 7H8v3H6v-3H3v-2h3V8h2v3h3v2zm4.5 2c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zm4-3c-.83 0-1.5-.67-1.5-1.5S18.67 9 19.5 9s1.5.67 1.5 1.5-.67 1.5-1.5 1.5z'/></svg>">
+  <link rel="icon" type="image/svg+xml"
+    href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23ffffff'><path d='M21 6H3c-1.1 0-2 .9-2 2v8c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm-10 7H8v3H6v-3H3v-2h3V8h2v3h3v2zm4.5 2c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zm4-3c-.83 0-1.5-.67-1.5-1.5S18.67 9 19.5 9s1.5.67 1.5 1.5-.67 1.5-1.5 1.5z'/></svg>">
 </head>
+
 <body>
 
   <!-- Navigation Bar -->
@@ -26,78 +29,47 @@
         GPU: <strong id="gpuName">NVIDIA L4</strong>
       </div>
       <div class="telemetry-chip">
-        VRAM: <strong id="vramUsed">0</strong> / <strong id="vramTotal">23 GB</strong>
+        BACKEND: <strong>SUNSHINE + NVENC</strong>
       </div>
       <div class="telemetry-chip">
-        MODE: <strong>1368x768 @ 60FPS</strong>
+        DISPLAY: <strong>1368x768 @ 60FPS</strong>
       </div>
-      <button class="btn-icon" id="btnOpenSettings" title="Stream Settings">
-        ⚙️ SETTINGS
-      </button>
     </div>
   </header>
 
-  <!-- Hero Featured Banner (GeForce NOW style) -->
+  <!-- Clean Hero Section -->
   <main class="hero">
     <div class="hero-content">
       <span class="hero-tag">ENTERPRISE HARDWARE CLOUD PLATFORM</span>
       <h1 class="hero-title">ULTRA-LOW LATENCY CLOUD GAMING</h1>
-      <p class="hero-subtitle">Stream native PC games, Windows 11 desktop, and Steam Big Picture with sub-20ms response time directly inside your browser. Zero local installation. Powered by NVIDIA Ada Lovelace NVENC & pure WebCodecs hardware pipelines.</p>
-      
+      <p class="hero-subtitle">High-performance cloud workstation and gaming environment powered by NVIDIA Ada Lovelace
+        L4 with zero-copy hardware encoding and sub-millisecond input response.</p>
+
       <div class="hero-actions">
         <button class="btn-primary" onclick="launchGameWithAnimation('win11', 'Windows 11 Fluent Desktop')">
           ▶ LAUNCH WINDOWS 11
         </button>
-        <button class="btn-secondary" onclick="launchGameWithAnimation('gtav', 'Grand Theft Auto V')">
-          🚗 LAUNCH GTA V
-        </button>
-        <button class="btn-secondary" onclick="launchGameWithAnimation('steam', 'Steam Big Picture')">
-          ♨️ STEAM BIG PICTURE
+        <button class="btn-secondary" onclick="launchGameWithAnimation('chrome', 'Google Chrome Cloud')">
+          🌐 GOOGLE CHROME CLOUD
         </button>
       </div>
     </div>
   </main>
 
-  <!-- Filter & Category Bar -->
-  <div class="filter-bar">
-    <div class="filter-tabs">
-      <button class="filter-tab active">ALL APPS</button>
-      <button class="filter-tab">DESKTOP</button>
-      <button class="filter-tab">GAMES</button>
-      <button class="filter-tab">TOOLS</button>
-    </div>
-    <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; color: var(--text-muted);" id="gamepadIndicator">
-      🎮 NO GAMEPAD DETECTED
-    </div>
-  </div>
-
-  <!-- Real Game Posters Grid -->
+  <!-- Clean Games Section (Only Desktop & Chrome) -->
   <section class="section-games">
     <div class="games-grid">
 
-      <!-- Grand Theft Auto V -->
-      <div class="game-card" onclick="launchGameWithAnimation('gtav', 'Grand Theft Auto V')">
-        <div class="card-banner" style="background-image: url('https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/271590/header.jpg');">
-          <span class="card-badge">AAA ACTION</span>
-        </div>
-        <div class="card-body">
-          <h3 class="card-title">Grand Theft Auto V</h3>
-          <p class="card-desc">Lossless DirectX 11 via DXVK with raw 3D mouse PointerLock and full gamepad rumble support.</p>
-          <div class="card-footer">
-            <span class="card-specs">WINE 9 • DXVK 2.4</span>
-            <button class="btn-card-play">▶ PLAY</button>
-          </div>
-        </div>
-      </div>
-
       <!-- Windows 11 Fluent Desktop -->
       <div class="game-card" onclick="launchGameWithAnimation('win11', 'Windows 11 Fluent Desktop')">
-        <div class="card-banner" style="background-image: url('https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&w=800&q=80');">
+        <div class="card-banner"
+          style="background-image: url('https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&w=800&q=80');">
           <span class="card-badge">SYSTEM GUI</span>
         </div>
         <div class="card-body">
           <h3 class="card-title">Windows 11 Fluent Desktop</h3>
-          <p class="card-desc">Full interactive cloud desktop with centered taskbar, start menu, dark fluent theme, and terminal.</p>
+          <p class="card-desc">Full interactive cloud desktop with centered taskbar, start menu, dark fluent theme, and
+            terminal.</p>
           <div class="card-footer">
             <span class="card-specs">60 FPS • NVENC ULL</span>
             <button class="btn-card-play">▶ PLAY</button>
@@ -105,29 +77,16 @@
         </div>
       </div>
 
-      <!-- Steam Big Picture -->
-      <div class="game-card" onclick="launchGameWithAnimation('steam', 'Steam Big Picture')">
-        <div class="card-banner" style="background-image: url('https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/593110/header.jpg');">
-          <span class="card-badge">LAUNCHER</span>
-        </div>
-        <div class="card-body">
-          <h3 class="card-title">Steam Big Picture</h3>
-          <p class="card-desc">Valve Steam 10-foot console gaming interface. Access your Steam library, cloud saves, and friends.</p>
-          <div class="card-footer">
-            <span class="card-specs">GAMEPAD READY</span>
-            <button class="btn-card-play">▶ PLAY</button>
-          </div>
-        </div>
-      </div>
-
       <!-- Google Chrome Cloud -->
       <div class="game-card" onclick="launchGameWithAnimation('chrome', 'Google Chrome Cloud')">
-        <div class="card-banner" style="background-image: url('https://images.unsplash.com/photo-1507238691740-187a5b1d37b8?auto=format&fit=crop&w=800&q=80');">
+        <div class="card-banner"
+          style="background-image: url('https://images.unsplash.com/photo-1507238691740-187a5b1d37b8?auto=format&fit=crop&w=800&q=80');">
           <span class="card-badge">BROWSER</span>
         </div>
         <div class="card-body">
           <h3 class="card-title">Google Chrome Cloud</h3>
-          <p class="card-desc">High-speed gigabit cloud web browsing, YouTube 4K 60FPS streaming, and ultra-fast file downloads.</p>
+          <p class="card-desc">Gigabit cloud web browsing, YouTube 4K 60FPS streaming, and ultra-fast file downloads.
+          </p>
           <div class="card-footer">
             <span class="card-specs">GIGABIT MESH</span>
             <button class="btn-card-play">▶ PLAY</button>
@@ -135,47 +94,15 @@
         </div>
       </div>
 
-      <!-- RetroArch Arcade -->
-      <div class="game-card" onclick="launchGameWithAnimation('retroarch', 'RetroArch Arcade')">
-        <div class="card-banner" style="background-image: url('https://images.unsplash.com/photo-1550745165-9bc0b252726f?auto=format&fit=crop&w=800&q=80');">
-          <span class="card-badge">RETRO</span>
-        </div>
-        <div class="card-body">
-          <h3 class="card-title">RetroArch Arcade</h3>
-          <p class="card-desc">Multi-platform console & arcade emulation with shaders, save states, rewind, and zero input lag.</p>
-          <div class="card-footer">
-            <span class="card-specs">LOW LATENCY</span>
-            <button class="btn-card-play">▶ PLAY</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Custom Application Launcher -->
-      <div class="game-card" onclick="launchGameWithAnimation('terminal', 'Application Launcher')">
-        <div class="card-banner" style="background-image: url('https://images.unsplash.com/photo-1629654297299-c8506221ca97?auto=format&fit=crop&w=800&q=80');">
-          <span class="card-badge">UTILITY</span>
-        </div>
-        <div class="card-body">
-          <h3 class="card-title">Rofi App Launcher</h3>
-          <p class="card-desc">Search and launch any custom installed application, Wine emulator, or game binary directly on display :1.</p>
-          <div class="card-footer">
-            <span class="card-specs">INSTANT SEARCH</span>
-            <button class="btn-card-play">▶ LAUNCH</button>
-          </div>
-        </div>
-      </div>
-
     </div>
   </section>
 
-  <!-- =============================================================
-       Cinematic Game Launch Overlay
-       ============================================================= -->
+  <!-- Cinematic Game Launch Overlay -->
   <div class="launch-overlay" id="launchOverlay">
     <div class="launch-box">
       <div class="launch-header">
         <span class="launch-title">⚡ XYRIS CLOUD SESSION INIT</span>
-        <span class="mono" style="font-size: 0.75rem; color: #888;">NVENC ZERO-LATENCY</span>
+        <span class="mono" style="font-size: 0.75rem; color: #888;">ZERO-LATENCY NVENC</span>
       </div>
       <div class="launch-target-game" id="launchTargetName">
         INITIALIZING SESSION...
@@ -184,96 +111,16 @@
         <div class="launch-progress-bar" id="launchProgressBar"></div>
       </div>
       <div class="launch-ticker" id="launchTicker">
-        <div class="launch-ticker-line active" id="tickerLine1">> [1/3] Securing NVIDIA Ada Lovelace L4 pipeline...</div>
-        <div class="launch-ticker-line" id="tickerLine2">> [2/3] Initializing zero-latency NVENC hardware encoder...</div>
-        <div class="launch-ticker-line" id="tickerLine3">> [3/3] Establishing sub-millisecond WebCodecs stream...</div>
-      </div>
-    </div>
-  </div>
-
-  <!-- =============================================================
-       Settings Modal (Sharp Industrial Design)
-       ============================================================= -->
-  <div class="settings-modal" id="settingsModal">
-    <div class="settings-box">
-      <div class="settings-header">
-        <span class="settings-title">⚙️ STREAM & GAMING SETTINGS</span>
-        <button class="settings-close-btn" id="btnCloseSettings">✕</button>
-      </div>
-
-      <div class="settings-group">
-        <label class="settings-label">
-          DISPLAY RESOLUTION
-          <span>16:9 NATIVE</span>
-        </label>
-        <select class="settings-select" id="prefResolution">
-          <option value="1368x768" selected>1368x768 (Colab Native 16:9 • Lowest Latency)</option>
-          <option value="1920x1080">1920x1080 (Full HD 1080p)</option>
-          <option value="1280x720">1280x720 (High Definition 720p)</option>
-          <option value="1360x768">1360x768 (Standard Widescreen)</option>
-        </select>
-      </div>
-
-      <div class="settings-group">
-        <label class="settings-label">
-          FRAME RATE TARGET
-          <span id="fpsVal">60 FPS</span>
-        </label>
-        <select class="settings-select" id="prefFps">
-          <option value="60" selected>60 FPS (Ultra-Smooth Hardware Sync)</option>
-          <option value="30">30 FPS (Low Bandwidth Mode)</option>
-        </select>
-      </div>
-
-      <div class="settings-group">
-        <label class="settings-label">
-          BITRATE LIMIT (CBR)
-          <span id="bitrateVal">15 Mbps</span>
-        </label>
-        <input type="range" class="settings-range" id="prefBitrate" min="5" max="40" step="1" value="15">
-      </div>
-
-      <div class="settings-group">
-        <label class="settings-label">
-          VIDEO DECODER CODEC
-          <span>HARDWARE ACCELERATED</span>
-        </label>
-        <select class="settings-select" id="prefCodec">
-          <option value="auto" selected>Hardware H.264 ULL (Universal Low Latency • Zero Black Screen)</option>
-          <option value="hevc">Hardware HEVC / H.265 (High Efficiency)</option>
-        </select>
-      </div>
-
-      <div class="settings-group">
-        <label class="settings-label">
-          MOUSE INPUT MODE & GAMING LOCK
-          <span>RAW INPUT</span>
-        </label>
-        <select class="settings-select" id="prefMouse">
-          <option value="locked" selected>🔒 Gaming Pointer Lock (Raw 3D FPS Mouse for GTA V / 3D Games)</option>
-          <option value="absolute">Absolute Desktop Pointer (Windows 11 UI Navigation)</option>
-          <option value="touch">Touch & Virtual Trackpad (Mobile Phone Controls)</option>
-        </select>
-      </div>
-
-      <div class="settings-group">
-        <label class="settings-label">
-          QUEUE BUFFER MODE
-          <span>ZERO-DELAY</span>
-        </label>
-        <select class="settings-select" id="prefQueue">
-          <option value="zero" selected>Zero Frame Queue (Drop Late Frames • Lowest Possible Latency)</option>
-          <option value="smooth">1-Frame Smooth Buffer</option>
-        </select>
-      </div>
-
-      <div class="settings-actions">
-        <button class="btn-secondary" id="btnCancelSettings">CANCEL</button>
-        <button class="btn-primary" id="btnSaveSettings">SAVE & APPLY</button>
+        <div class="launch-ticker-line active" id="tickerLine1">> [1/3] Initializing NVIDIA Ada Lovelace L4 pipeline...
+        </div>
+        <div class="launch-ticker-line" id="tickerLine2">> [2/3] Configuring zero-latency hardware encoder...</div>
+        <div class="launch-ticker-line" id="tickerLine3">> [3/3] Establishing sub-millisecond audio & video stream...
+        </div>
       </div>
     </div>
   </div>
 
   <script src="/static/js/portal.js"></script>
 </body>
+
 </html>

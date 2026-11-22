@@ -1,4 +1,4 @@
-// XGS - Xyris Cloud Gaming Ultra-Low Latency WebCodecs + WebGPU Streaming Client
+// XGS - Xyris Cloud Gaming Ultra-Low Latency WebCodecs + WebAudio Streaming Client
 
 (function() {
   const canvas = document.getElementById("streamCanvas");
@@ -7,31 +7,29 @@
   const hudFps = document.getElementById("hudFps");
   const hudPing = document.getElementById("hudPing");
   const hudBitrate = document.getElementById("hudBitrate");
-  const hudCodec = document.getElementById("hudCodec");
   const hudInput = document.getElementById("hudInput");
+  const hudAudio = document.getElementById("hudAudio");
 
-  // In-Game Toolbar & Controls
-  const playerControls = document.getElementById("playerControls");
-  const btnToggleBar = document.getElementById("btnToggleBar");
-  const btnRelock = document.getElementById("btnRelock");
-  const btnFullscreen = document.getElementById("btnFullscreen");
-  const btnVirtualMouse = document.getElementById("btnVirtualMouse");
-  const btnMobileKeyboard = document.getElementById("btnMobileKeyboard");
-  const btnOpenInGameSettings = document.getElementById("btnOpenInGameSettings");
-  const btnToggleHud = document.getElementById("btnToggleHud");
-  const btnSound = document.getElementById("btnSound");
-  const btnExit = document.getElementById("btnExit");
-
-  // In-Game Settings Modal Elements
+  // Single Settings Gear Button & In-Game Modal
+  const btnSettingsGear = document.getElementById("btnSettingsGear");
   const inGameSettingsModal = document.getElementById("inGameSettingsModal");
   const btnCloseInGameSettings = document.getElementById("btnCloseInGameSettings");
   const btnApplyInGameSettings = document.getElementById("btnApplyInGameSettings");
+
+  // In-Game Modal Action Buttons
+  const btnRelock = document.getElementById("btnRelock");
+  const btnFullscreen = document.getElementById("btnFullscreen");
+  const btnMobileKeyboard = document.getElementById("btnMobileKeyboard");
+  const btnVirtualMouse = document.getElementById("btnVirtualMouse");
+  const btnToggleHud = document.getElementById("btnToggleHud");
+  const btnToggleSound = document.getElementById("btnToggleSound");
+  const btnExit = document.getElementById("btnExit");
   const liveBitrateSlider = document.getElementById("liveBitrateSlider");
   const liveBitrateVal = document.getElementById("liveBitrateVal");
   const liveMouseSelect = document.getElementById("liveMouseSelect");
   const liveQueueSelect = document.getElementById("liveQueueSelect");
 
-  // Mobile / Virtual Mouse Elements
+  // Mobile Virtual Mouse & Keyboard Elements
   const virtualMouseOverlay = document.getElementById("virtualMouseOverlay");
   const btnCloseVirtualMouse = document.getElementById("btnCloseVirtualMouse");
   const btnToggleMouseMode = document.getElementById("btnToggleMouseMode");
@@ -41,7 +39,6 @@
   const btnScrollUp = document.getElementById("btnScrollUp");
   const btnScrollDown = document.getElementById("btnScrollDown");
 
-  // Mobile Keyboard Elements
   const mobileKeyboardInput = document.getElementById("mobileKeyboardInput");
   const mobileTextDrawer = document.getElementById("mobileTextDrawer");
   const mobileTextInput = document.getElementById("mobileTextInput");
@@ -54,7 +51,12 @@
   let wsStream = null;
   let wsControl = null;
   let videoDecoder = null;
+
+  // WebAudio PCM Engine
   let audioCtx = null;
+  let audioGain = null;
+  let isAudioEnabled = true;
+  let nextAudioTime = 0;
 
   let isPointerLocked = false;
   let frameCount = 0;
@@ -63,23 +65,78 @@
   let lastBitrateTime = performance.now();
 
   const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-  let mouseMode = localStorage.getItem("nebula_mouse") || (isMobile ? "touch" : "locked");
+  let mouseMode = localStorage.getItem("nebula_mouse") || "client";
   let queueMode = localStorage.getItem("nebula_queue") || "zero";
+  let selectedCodec = localStorage.getItem("nebula_codec") || "h264";
 
-  if (isMobile) {
-    if (hudInput) hudInput.textContent = "Touch Controls";
-    if (virtualMouseOverlay) virtualMouseOverlay.style.display = "flex";
-  } else {
-    if (hudInput) hudInput.textContent = (mouseMode === "locked") ? "Gaming Lock (Click to Lock)" : "Desktop Absolute";
+  // -------------------------------------------------------------
+  // 1. WebAudio Initialization (Instant 48kHz PCM Playback)
+  // -------------------------------------------------------------
+  function initAudio() {
+    if (audioCtx) return;
+    try {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      audioCtx = new AudioContextClass({ latencyHint: "interactive", sampleRate: 48000 });
+      audioGain = audioCtx.createGain();
+      audioGain.gain.value = 1.0;
+      audioGain.connect(audioCtx.destination);
+      if (audioCtx.state === "suspended") {
+        audioCtx.resume();
+      }
+      console.log("[Audio] WebAudio 48kHz pipeline initialized.");
+    } catch (e) {
+      console.warn("[Audio] Could not initialize WebAudio:", e);
+    }
+  }
+
+  function playPcmChunk(pcmData) {
+    if (!audioCtx || !isAudioEnabled) return;
+    if (audioCtx.state === "suspended") {
+      audioCtx.resume();
+    }
+
+    try {
+      // pcmData is raw 16-bit signed stereo at 48000 Hz
+      const int16View = new Int16Array(pcmData.buffer, pcmData.byteOffset, pcmData.byteLength / 2);
+      const numSamples = int16View.length / 2;
+      if (numSamples <= 0) return;
+
+      const audioBuffer = audioCtx.createBuffer(2, numSamples, 48000);
+      const left = audioBuffer.getChannelData(0);
+      const right = audioBuffer.getChannelData(1);
+
+      for (let i = 0; i < numSamples; i++) {
+        left[i] = int16View[i * 2] / 32768.0;
+        right[i] = int16View[i * 2 + 1] / 32768.0;
+      }
+
+      const source = audioCtx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(audioGain);
+
+      const now = audioCtx.currentTime;
+      // Resynchronize if buffer fell behind or drifted ahead (> 80ms)
+      if (nextAudioTime < now || nextAudioTime - now > 0.08) {
+        nextAudioTime = now + 0.01;
+      }
+      source.start(nextAudioTime);
+      nextAudioTime += audioBuffer.duration;
+    } catch (e) {
+      // Audio error catch
+    }
   }
 
   // -------------------------------------------------------------
-  // 1. WebCodecs VideoDecoder Initialization (Zero Buffer)
+  // 2. WebCodecs VideoDecoder (Zero Buffer, Ultra-Low Latency)
   // -------------------------------------------------------------
   function initVideoDecoder() {
     if (!window.VideoDecoder) {
-      alert("WebCodecs VideoDecoder is not supported in this browser. Please use modern Chrome, Edge, or Brave.");
+      alert("WebCodecs VideoDecoder is not supported in this browser. Please use Chrome, Edge, or Brave.");
       return;
+    }
+
+    if (videoDecoder && videoDecoder.state !== "closed") {
+      try { videoDecoder.close(); } catch (e) {}
     }
 
     videoDecoder = new VideoDecoder({
@@ -97,29 +154,28 @@
       }
     });
 
-    // Hardware H.264 High Profile Level 4.2 (Universal zero-latency decoding)
+    const codecStr = (selectedCodec === "av1") ? "av01.0.05M.08" : "avc1.64002a";
     videoDecoder.configure({
-      codec: "avc1.64002a",
+      codec: codecStr,
       optimizeForLatency: true
     });
-    if (hudCodec) hudCodec.textContent = "H.264 ULL";
   }
 
   // -------------------------------------------------------------
-  // 2. WebSocket Connections (Streaming & Controls)
+  // 3. WebSocket Streams (Video & Audio Out, Control In)
   // -------------------------------------------------------------
   function connectStream() {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const host = window.location.host;
 
-    // Stream WebSocket (Video & Audio)
+    // Stream WebSocket
     wsStream = new WebSocket(`${protocol}//${host}/ws/stream`);
     wsStream.binaryType = "arraybuffer";
 
     wsStream.onopen = () => {
-      console.log("[Stream] Connected to XGS stream engine");
-      const savedBitrate = localStorage.getItem("nebula_bitrate") || 15;
-      wsStream.send(JSON.stringify({ bitrate_mbps: savedBitrate }));
+      console.log("[Stream] Connected to XGS streaming engine");
+      const savedBitrate = localStorage.getItem("nebula_bitrate") || 4;
+      wsStream.send(JSON.stringify({ bitrate_mbps: savedBitrate, codec: selectedCodec }));
     };
 
     wsStream.onmessage = (event) => {
@@ -134,8 +190,8 @@
         const isKey = data[1] === 1;
         const nalData = data.subarray(2);
 
-        // Zero-queue latency protection: drop delta frame if decoder is backed up
-        if (queueMode === "zero" && !isKey && videoDecoder.decodeQueueSize > 2) {
+        // Anti-lag zero queue: drop non-key delta frames if decoder is busy
+        if (queueMode === "zero" && !isKey && videoDecoder.decodeQueueSize > 0) {
           return;
         }
 
@@ -151,9 +207,11 @@
         }
       }
 
-      // Tag 0x02: Audio Chunk
-      else if (tag === 0x02 && audioCtx) {
-        // Audio playback
+      // Tag 0x02: Audio PCM Chunk (Zero-Delay 48kHz Stereo)
+      else if (tag === 0x02) {
+        initAudio();
+        const pcmData = data.subarray(1);
+        playPcmChunk(pcmData);
       }
     };
 
@@ -162,7 +220,7 @@
       setTimeout(connectStream, 2000);
     };
 
-    // Control WebSocket (Inputs & Precision Ping)
+    // Control WebSocket
     wsControl = new WebSocket(`${protocol}//${host}/ws/control`);
     wsControl.binaryType = "arraybuffer";
 
@@ -175,7 +233,6 @@
       if (typeof event.data !== "string") {
         const data = new Uint8Array(event.data);
         if (data[0] === 0x07 && data.length >= 9) {
-          // Precision Ping Echo
           const sent = new DataView(data.buffer, data.byteOffset).getFloat64(1, false);
           const rtt = Math.round(performance.now() - sent);
           if (hudPing) hudPing.textContent = `${rtt} ms`;
@@ -190,7 +247,7 @@
   }
 
   // -------------------------------------------------------------
-  // 3. High-Precision Ping & Telemetry
+  // 4. Precision Ping & FPS Loop
   // -------------------------------------------------------------
   function startPingLoop() {
     setInterval(() => {
@@ -202,7 +259,6 @@
         wsControl.send(buf);
       }
 
-      // Calculate FPS
       const now = performance.now();
       const elapsed = (now - lastFpsTime) / 1000;
       if (elapsed >= 1.0) {
@@ -212,7 +268,6 @@
         lastFpsTime = now;
       }
 
-      // Calculate Bitrate
       const bitElapsed = (now - lastBitrateTime) / 1000;
       if (bitElapsed >= 1.0) {
         const mbps = ((bytesReceived * 8) / (bitElapsed * 1000000)).toFixed(1);
@@ -224,7 +279,7 @@
   }
 
   // -------------------------------------------------------------
-  // 4. Binary Input Dispatchers (Sub-0.05ms XTest Calls)
+  // 5. Binary Input Dispatchers (Sub-0.05ms XTest)
   // -------------------------------------------------------------
   function sendMouseMoveAbs(x, y) {
     if (!wsControl || wsControl.readyState !== WebSocket.OPEN) return;
@@ -276,50 +331,40 @@
   }
 
   // -------------------------------------------------------------
-  // 5. Gaming Pointer Lock & Mouse Listeners
+  // 6. Gaming Mouse Lock & Desktop Inputs
   // -------------------------------------------------------------
   function lockMouseForGaming() {
     try {
-      const lockPromise = canvas.requestPointerLock({ unadjustedMovement: true });
-      if (lockPromise && lockPromise.catch) {
-        lockPromise.catch(() => canvas.requestPointerLock());
-      }
+      const p = canvas.requestPointerLock({ unadjustedMovement: true });
+      if (p && p.catch) p.catch(() => canvas.requestPointerLock());
     } catch (e) {
       canvas.requestPointerLock();
     }
   }
 
-  function initMouseAndKeyboard() {
-    // Canvas click locks mouse if Gaming mode selected
+  function initInputs() {
     canvas.addEventListener("click", () => {
-      if (!isMobile && mouseMode === "locked" && !isPointerLocked) {
+      initAudio();
+      if (mouseMode === "locked" && !isPointerLocked) {
         lockMouseForGaming();
-      }
-      if (!audioCtx) {
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       }
     });
 
     document.addEventListener("pointerlockchange", () => {
       isPointerLocked = (document.pointerLockElement === canvas);
       if (btnRelock) {
-        if (isPointerLocked) {
-          btnRelock.classList.add("active");
-          btnRelock.textContent = "🔓 UNLOCK (ESC)";
-        } else {
-          btnRelock.classList.remove("active");
-          btnRelock.textContent = "🔒 LOCK MOUSE";
-        }
+        btnRelock.textContent = isPointerLocked ? "🔓 UNLOCK (ESC)" : "🔒 LOCK (FPS)";
       }
       if (hudInput) {
-        hudInput.textContent = isPointerLocked ? "Gaming Locked (3D)" : (isMobile ? `Touch (${mouseMode})` : "Desktop Absolute");
+        hudInput.textContent = isPointerLocked ? "3D Locked" : "Client Cursor";
       }
     });
 
     window.addEventListener("mousemove", (e) => {
       if (isPointerLocked || mouseMode === "locked") {
         sendMouseMoveRel(e.movementX, e.movementY);
-      } else if (!isMobile) {
+      } else {
+        // Client-side mouse cursor by default
         const rect = canvas.getBoundingClientRect();
         const scaleX = canvas.width / rect.width;
         const scaleY = canvas.height / rect.height;
@@ -330,10 +375,11 @@
     });
 
     window.addEventListener("mousedown", (e) => {
+      initAudio();
       if (isMobile) return;
       let btn = 1;
-      if (e.button === 1) btn = 2; // Middle
-      if (e.button === 2) btn = 3; // Right
+      if (e.button === 1) btn = 2;
+      if (e.button === 2) btn = 3;
       sendMouseButton(btn, true);
     });
 
@@ -349,7 +395,6 @@
       sendMouseWheel(e.deltaY / 10);
     }, { passive: true });
 
-    // Keyboard capture
     window.addEventListener("keydown", (e) => {
       if (e.code === "KeyF" && e.ctrlKey && e.shiftKey) {
         hudOverlay.style.display = hudOverlay.style.display === "none" ? "flex" : "none";
@@ -370,15 +415,17 @@
   }
 
   // -------------------------------------------------------------
-  // 6. Mobile Touch & Virtual Mouse
+  // 7. Mobile Touch & Virtual Trackpad
   // -------------------------------------------------------------
   function initMobileTouch() {
     let touchStartTime = 0;
     let lastTouchX = null;
     let lastTouchY = null;
     let isDragging = false;
+    const clientCursorDot = document.getElementById("clientCursorDot");
 
     canvas.addEventListener("touchstart", (e) => {
+      initAudio();
       if (e.touches.length === 1) {
         const t = e.touches[0];
         const rect = canvas.getBoundingClientRect();
@@ -388,6 +435,12 @@
         lastTouchX = t.clientX;
         lastTouchY = t.clientY;
         isDragging = false;
+
+        if (clientCursorDot) {
+          clientCursorDot.style.left = `${t.clientX}px`;
+          clientCursorDot.style.top = `${t.clientY}px`;
+          clientCursorDot.style.display = "block";
+        }
 
         if (mouseMode !== "trackpad") {
           sendMouseMoveAbs(x, y);
@@ -402,6 +455,11 @@
       if (e.touches.length === 1) {
         const t = e.touches[0];
         isDragging = true;
+
+        if (clientCursorDot) {
+          clientCursorDot.style.left = `${t.clientX}px`;
+          clientCursorDot.style.top = `${t.clientY}px`;
+        }
 
         if (mouseMode === "trackpad") {
           const dx = (t.clientX - lastTouchX) * 1.6;
@@ -424,6 +482,9 @@
     }, { passive: false });
 
     canvas.addEventListener("touchend", (e) => {
+      if (clientCursorDot) {
+        setTimeout(() => { if (!isDragging && clientCursorDot) clientCursorDot.style.display = "none"; }, 400);
+      }
       if (!isDragging && performance.now() - touchStartTime < 250) {
         sendMouseButton(1, true);
         setTimeout(() => sendMouseButton(1, false), 50);
@@ -431,7 +492,6 @@
       isDragging = false;
     });
 
-    // Virtual Trackpad Pad
     if (vmTouchpad) {
       let vmX = 0;
       let vmY = 0;
@@ -454,7 +514,6 @@
       }, { passive: false });
     }
 
-    // Touch Buttons
     function bindPress(el, btnNum) {
       if (!el) return;
       const down = (e) => { e.preventDefault(); el.classList.add("active"); sendMouseButton(btnNum, true); };
@@ -475,13 +534,13 @@
       btnToggleMouseMode.onclick = () => {
         mouseMode = (mouseMode === "trackpad") ? "direct" : "trackpad";
         btnToggleMouseMode.textContent = `MODE: ${mouseMode.toUpperCase()}`;
-        if (hudInput) hudInput.textContent = `Touch (${mouseMode})`;
       };
     }
 
     if (btnVirtualMouse) {
       btnVirtualMouse.onclick = () => {
         virtualMouseOverlay.style.display = (virtualMouseOverlay.style.display === "none" || !virtualMouseOverlay.style.display) ? "flex" : "none";
+        inGameSettingsModal.style.display = "none";
       };
     }
     if (btnCloseVirtualMouse) {
@@ -492,16 +551,17 @@
   }
 
   // -------------------------------------------------------------
-  // 7. Mobile Keyboard Trigger & Quick Input
+  // 8. Mobile Native Keyboard
   // -------------------------------------------------------------
   function initKeyboard() {
-    function openMobileKeyboard() {
+    function openKeyboard() {
+      inGameSettingsModal.style.display = "none";
       mobileKeyboardInput.focus();
       mobileTextDrawer.style.display = "flex";
       mobileTextInput.focus();
     }
 
-    if (btnMobileKeyboard) btnMobileKeyboard.onclick = openMobileKeyboard;
+    if (btnMobileKeyboard) btnMobileKeyboard.onclick = openKeyboard;
     if (btnCloseTextDrawer) btnCloseTextDrawer.onclick = () => { mobileTextDrawer.style.display = "none"; };
 
     if (btnSendText) {
@@ -549,12 +609,12 @@
   }
 
   // -------------------------------------------------------------
-  // 8. In-Game Settings Modal
+  // 9. In-Game Settings Modal (Triggered by ⚙️ Gear Icon)
   // -------------------------------------------------------------
   function initInGameSettings() {
-    if (btnOpenInGameSettings) {
-      btnOpenInGameSettings.onclick = () => {
-        inGameSettingsModal.style.display = "flex";
+    if (btnSettingsGear) {
+      btnSettingsGear.onclick = () => {
+        inGameSettingsModal.style.display = (inGameSettingsModal.style.display === "flex") ? "none" : "flex";
       };
     }
     if (btnCloseInGameSettings) {
@@ -562,76 +622,97 @@
         inGameSettingsModal.style.display = "none";
       };
     }
+    const liveCodecSelect = document.getElementById("liveCodecSelect");
+    const liveCodecVal = document.getElementById("liveCodecVal");
+
+    if (btnApplyInGameSettings) {
+      btnApplyInGameSettings.onclick = () => {
+        mouseMode = liveMouseSelect ? liveMouseSelect.value : mouseMode;
+        queueMode = liveQueueSelect ? liveQueueSelect.value : queueMode;
+        if (liveCodecSelect) {
+          const newCodec = liveCodecSelect.value;
+          if (newCodec !== selectedCodec) {
+            selectedCodec = newCodec;
+            localStorage.setItem("nebula_codec", selectedCodec);
+            initVideoDecoder();
+            if (wsStream && wsStream.readyState === WebSocket.OPEN) {
+              wsStream.send(JSON.stringify({ codec: selectedCodec }));
+            }
+          }
+        }
+        localStorage.setItem("nebula_mouse", mouseMode);
+        localStorage.setItem("nebula_queue", queueMode);
+        if (liveBitrateSlider) localStorage.setItem("nebula_bitrate", liveBitrateSlider.value);
+        inGameSettingsModal.style.display = "none";
+      };
+    }
 
     if (liveBitrateSlider && liveBitrateVal) {
-      liveBitrateSlider.value = localStorage.getItem("nebula_bitrate") || 15;
-      liveBitrateVal.textContent = `${liveBitrateSlider.value} Mbps`;
+      liveBitrateSlider.value = localStorage.getItem("nebula_bitrate") || 4;
+      liveBitrateVal.textContent = `${liveBitrateSlider.value} Mbps (Low Latency)`;
       liveBitrateSlider.oninput = (e) => {
-        liveBitrateVal.textContent = `${e.target.value} Mbps`;
+        liveBitrateVal.textContent = `${e.target.value} Mbps (Low Latency)`;
         if (wsStream && wsStream.readyState === WebSocket.OPEN) {
           wsStream.send(JSON.stringify({ bitrate_mbps: e.target.value }));
         }
       };
     }
 
-    if (liveMouseSelect) {
-      liveMouseSelect.value = mouseMode;
-    }
-    if (liveQueueSelect) {
-      liveQueueSelect.value = queueMode;
-    }
-
-    if (btnApplyInGameSettings) {
-      btnApplyInGameSettings.onclick = () => {
-        mouseMode = liveMouseSelect.value;
-        queueMode = liveQueueSelect.value;
-        localStorage.setItem("nebula_mouse", mouseMode);
-        localStorage.setItem("nebula_queue", queueMode);
-        localStorage.setItem("nebula_bitrate", liveBitrateSlider.value);
-        if (hudInput) {
-          hudInput.textContent = (mouseMode === "locked") ? "Gaming Lock" : (isMobile ? `Touch (${mouseMode})` : "Desktop Absolute");
-        }
-        inGameSettingsModal.style.display = "none";
+    if (liveMouseSelect) liveMouseSelect.value = mouseMode;
+    if (liveQueueSelect) liveQueueSelect.value = queueMode;
+    if (liveCodecSelect) {
+      liveCodecSelect.value = selectedCodec;
+      if (liveCodecVal) liveCodecVal.textContent = selectedCodec.toUpperCase();
+      liveCodecSelect.onchange = (e) => {
+        selectedCodec = e.target.value;
+        if (liveCodecVal) liveCodecVal.textContent = selectedCodec.toUpperCase();
       };
     }
-  }
 
-  // -------------------------------------------------------------
-  // 9. Fullscreen & Navigation Handlers
-  // -------------------------------------------------------------
-  function toggleFullscreen() {
-    const doc = window.document;
-    const docEl = doc.documentElement;
-    const req = docEl.requestFullscreen || docEl.mozRequestFullScreen || docEl.webkitRequestFullScreen || docEl.msRequestFullscreen;
-    const exit = doc.exitFullscreen || doc.mozCancelFullScreen || doc.webkitExitFullscreen || doc.msExitFullscreen;
+    if (btnToggleSound) {
+      btnToggleSound.onclick = () => {
+        isAudioEnabled = !isAudioEnabled;
+        btnToggleSound.textContent = isAudioEnabled ? "🔊 AUDIO (ON)" : "🔇 AUDIO (MUTED)";
+        if (hudAudio) hudAudio.textContent = isAudioEnabled ? "Active (48kHz)" : "Muted";
+      };
+    }
 
-    if (!doc.fullscreenElement && !doc.mozFullScreenElement && !doc.webkitFullscreenElement && !doc.msFullscreenElement) {
-      if (req) req.call(docEl).catch(() => {});
-    } else {
-      if (exit) exit.call(doc);
+    if (btnToggleHud) {
+      btnToggleHud.onclick = () => {
+        hudOverlay.style.display = (hudOverlay.style.display === "none") ? "flex" : "none";
+      };
+    }
+
+    if (btnRelock) {
+      btnRelock.onclick = () => {
+        inGameSettingsModal.style.display = "none";
+        lockMouseForGaming();
+      };
+    }
+
+    if (btnFullscreen) {
+      btnFullscreen.onclick = () => {
+        const doc = window.document;
+        const docEl = doc.documentElement;
+        const req = docEl.requestFullscreen || docEl.webkitRequestFullScreen || docEl.mozRequestFullScreen || docEl.msRequestFullscreen;
+        const exit = doc.exitFullscreen || doc.webkitExitFullscreen || doc.mozCancelFullScreen || doc.msExitFullscreen;
+        if (!doc.fullscreenElement && !doc.webkitFullscreenElement) {
+          if (req) req.call(docEl).catch(() => {});
+        } else {
+          if (exit) exit.call(doc);
+        }
+      };
+    }
+
+    if (btnExit) {
+      btnExit.onclick = () => { window.location.href = "/"; };
     }
   }
 
-  if (btnFullscreen) btnFullscreen.onclick = toggleFullscreen;
-  if (btnRelock) btnRelock.onclick = lockMouseForGaming;
-  if (btnToggleHud) {
-    btnToggleHud.onclick = () => {
-      hudOverlay.style.display = hudOverlay.style.display === "none" ? "flex" : "none";
-    };
-  }
-  if (btnToggleBar) {
-    btnToggleBar.onclick = () => {
-      playerControls.style.display = (playerControls.style.display === "none" || !playerControls.style.display) ? "flex" : "none";
-    };
-  }
-  if (btnExit) {
-    btnExit.onclick = () => { window.location.href = "/"; };
-  }
-
-  // Startup execution
+  // Startup initialization
   initVideoDecoder();
   connectStream();
-  initMouseAndKeyboard();
+  initInputs();
   initMobileTouch();
   initKeyboard();
   initInGameSettings();

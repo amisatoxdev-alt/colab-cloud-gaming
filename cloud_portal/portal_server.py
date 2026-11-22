@@ -125,11 +125,13 @@ async def ws_stream_handler(request):
     try:
         async for msg in ws:
             if msg.type == WSMsgType.TEXT:
-                # Client config message (e.g. bitrate request)
+                # Client config message (e.g. bitrate or codec request)
                 try:
                     cfg = json.loads(msg.data)
-                    if "bitrate_mbps" in cfg:
-                        engine.bitrate_mbps = float(cfg["bitrate_mbps"])
+                    engine.set_config(
+                        bitrate_mbps=cfg.get("bitrate_mbps"),
+                        codec=cfg.get("codec")
+                    )
                 except Exception:
                     pass
             elif msg.type == WSMsgType.ERROR:

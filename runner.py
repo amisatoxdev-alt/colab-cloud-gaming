@@ -907,13 +907,12 @@ def print_dashboard(links, ts_ip=None):
         f"\n{top}",
         header,
         sep,
-        make_card_row("XGS Xyris Cloud", funnel_display, C_GREEN + C_BOLD),
-        make_card_row("Streaming Engine", "WebCodecs + NVENC ULL (Direct Access)", C_CYAN),
+        make_card_row("MoonlightWeb (Web/Funnel)", funnel_display, C_GREEN + C_BOLD),
+        make_card_row("MoonlightWeb Access PIN", pin_display, C_YELLOW + C_BOLD),
         sep,
         make_card_row("Sunshine Direct (TS)", sunshine_ts, C_WHITE),
         make_card_row("Sunshine Credentials", links.get('sunshine_creds', 'admin / Sunshine123!'), C_WHITE),
         make_card_row("Tailscale Node IP", ts_display, C_WHITE),
-        make_card_row("MoonlightWeb Fallback", pin_display, C_YELLOW),
     ]
     if links.get('game'):
         lines.insert(-1, make_card_row("Steam Game", links.get('game'), C_MAGENTA + C_BOLD))
