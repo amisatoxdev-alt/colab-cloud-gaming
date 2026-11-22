@@ -777,6 +777,9 @@ with open("/etc/X11/xorg.conf", "w") as f:
 # -------------------------------------------------------------
 log("Starting display, audio, and background daemons...")
 subprocess.run("pkill -9 -f portal_server.py 2>/dev/null || true; killall -9 Xorg Xvfb x11vnc openbox sunshine cloudflared MoonlightWeb tailscaled 2>/dev/null || true", shell=True)
+# The tailscaled supervisor is a `bash -c "while true; ..."` loop -- killall never
+# matches it, so leftovers accumulate and fight over the daemon socket.
+subprocess.run("pkill -9 -f 'TS_DEBUG_ALWAYS_USE_DERP' 2>/dev/null || true", shell=True)
 time.sleep(1)
 subprocess.run("rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 /tmp/com.google.Chrome.* /root/.config/google-chrome/Singleton*", shell=True)
 
@@ -907,14 +910,53 @@ else:
 spawn_daemon(["x11vnc", "-display", ":1", "-nopw", "-forever", "-shared", "-rfbport", "5900", "-listen", "127.0.0.1"], "x11vnc.log")
 spawn_daemon(["/opt/noVNC/utils/novnc_proxy", "--vnc", "127.0.0.1:5900", "--listen", "6080"], "novnc.log")
 
-# 5.5 Tailscale DERP mode
+# 5.5 Tailscale DERP mode (exactly ONE supervisor, never duplicated)
 os.makedirs("/var/lib/tailscale", exist_ok=True)
 os.makedirs("/var/run/tailscale", exist_ok=True)
+
+# CRITICAL FIX -- why the launcher used to hang on "waiting for node authorization":
+# the kill list above only matches the `tailscaled` *binary*, never the
+# `bash -c "while true; do ... tailscaled ...; sleep 1; done"` supervisor that
+# wraps it. So every re-run of this script (and runner.py runs it TWICE on
+# retry) left the previous supervisor alive and added another one. Two
+# supervisors then fight over /run/tailscale/tailscaled.sock: one binds it, the
+# other fails instantly, sleeps 1s, retries -- a permanent 1 Hz crash loop.
+# While that loop runs, every `tailscale status` / `tailscale up` call is
+# flaky, so the auth probe reports "needs login" and the launcher waits
+# forever. Kill the LOOPS first, then reap the daemons, then start one.
+subprocess.run("pkill -9 -f 'TS_DEBUG_ALWAYS_USE_DERP' 2>/dev/null || true", shell=True)
+subprocess.run("pkill -9 -f 'tailscaled --tun=userspace-networking' 2>/dev/null || true", shell=True)
+for _ in range(60):
+    if subprocess.run("pgrep -f 'tailscaled --tun=userspace-networking' >/dev/null 2>&1",
+                      shell=True).returncode != 0:
+        break
+    time.sleep(0.2)
+subprocess.run("rm -f /run/tailscale/tailscaled.sock", shell=True)
+log(f"Tailscale supervisors after cleanup: "
+    f"{subprocess.run('pgrep -fc TS_DEBUG_ALWAYS_USE_DERP || true', shell=True, text=True, capture_output=True).stdout.strip()}")
+
 spawn_daemon([
     "bash", "-c",
     "while true; do TS_DEBUG_ALWAYS_USE_DERP=true tailscaled --tun=userspace-networking --socket=/run/tailscale/tailscaled.sock --port 41641; sleep 1; done"
 ], "tailscale.log")
-time.sleep(2)
+
+def ts_json(timeout=6):
+    """Authoritative daemon state. Never raises, never blocks past `timeout`."""
+    try:
+        p = subprocess.run("tailscale status --json", shell=True, text=True,
+                           capture_output=True, timeout=timeout)
+        return json.loads(p.stdout or "{}")
+    except Exception:
+        return {}
+
+# Wait for the backend to actually answer instead of a blind 2s sleep.
+ts_ready = False
+for _ in range(40):
+    if ts_json(3).get("BackendState"):
+        ts_ready = True
+        break
+    time.sleep(0.5)
+log(f"Tailscale daemon responding: {ts_ready}")
 
 ts_ip = subprocess.run("tailscale ip -4 2>/dev/null || true", shell=True, text=True, capture_output=True).stdout.strip()
 if not ts_ip or " " in ts_ip:
@@ -929,40 +971,82 @@ spawn_daemon(["/opt/moonlightweb/bin/MoonlightWeb", "--port", "8090", "--autosta
 time.sleep(2)
 
 # 5.7 Tailscale login (must happen BEFORE Funnel can be published)
-log("Bringing Tailscale up and waiting for node authorization...")
-ts_res = subprocess.run("tailscale up --operator=root --reset --accept-dns=false --timeout=25s",
-                        shell=True, text=True, capture_output=True)
-ts_match = re.search(r'https://login\.tailscale\.com/a/[a-zA-Z0-9]+', ts_res.stdout + ts_res.stderr)
-tailscale_url = ts_match.group(0) if ts_match else "Check 'tailscale status'"
-if "login.tailscale.com" in tailscale_url:
-    log(f"Tailscale Authorization URL: {tailscale_url}")
+log("Checking Tailscale node authorization state...")
+
+# CRITICAL FIX -- this used to run `tailscale up --operator=root --reset ...`
+# on EVERY deployment. `--reset` throws away the stored prefs/node settings,
+# which on an already-authenticated node forces a brand-new device login: the
+# node goes back to NeedsLogin, a fresh login.tailscale.com URL is minted, and
+# the launcher sits on "waiting for authorization" forever even though nothing
+# was wrong. Only ask for a login when the backend genuinely says NeedsLogin,
+# and never reset an authorized node.
+ts_state = ts_json(8)
+backend_state = ts_state.get("BackendState", "")
+tailscale_url = ""
+
+if backend_state in ("NeedsLogin", "Stopped", "NoState", ""):
+    log(f"Tailscale needs authorization (state: {backend_state or 'unknown'}).")
+    ts_res = subprocess.run(
+        "tailscale up --operator=root --accept-dns=false --accept-routes=false "
+        "--timeout=20s 2>&1",
+        shell=True, text=True, capture_output=True, timeout=40
+    )
+    blob = (ts_res.stdout or "") + (ts_res.stderr or "")
+    ts_match = re.search(r'https://login\.tailscale\.com/a/[a-zA-Z0-9]+', blob)
+    if not ts_match:
+        ts_match = re.search(r'https://login\.tailscale\.com/[^\s"\']+', blob)
+    tailscale_url = ts_match.group(0) if ts_match else ""
+    if tailscale_url:
+        log(f"Tailscale Authorization URL: {tailscale_url}")
+    else:
+        tailscale_url = "Check 'tailscale status'"
+        log(f"Tailscale up returned no login URL: {blob.strip()[:200]}")
+else:
+    log(f"Tailscale already authorized (state: {backend_state}). No login needed.")
+    # Re-assert the operator + DNS prefs WITHOUT --reset so the node stays logged in.
+    subprocess.run("tailscale set --operator=root --accept-dns=false 2>/dev/null || true",
+                   shell=True, text=True, capture_output=True, timeout=20)
 
 # Re-resolve node IP now that the node may be authenticated
-ts_ip_live = subprocess.run("tailscale ip -4 2>/dev/null || true", shell=True, text=True, capture_output=True).stdout.strip()
-if ts_ip_live and " " not in ts_ip_live and not ts_ip_live.startswith("100.64."):
-    pass
+ts_ip_live = subprocess.run("tailscale ip -4 2>/dev/null || true", shell=True,
+                            text=True, capture_output=True, timeout=10).stdout.strip()
 if ts_ip_live and " " not in ts_ip_live:
     ts_ip = ts_ip_live
 
 # 5.8 Tailscale Funnel (public HTTPS endpoint, replaces Cloudflare tunnels entirely)
-log("Publishing MoonlightWeb through Tailscale Funnel...")
-subprocess.run("mkdir -p /var/log/tunnels", shell=True)
-subprocess.run("tailscale funnel --bg --yes 8090 > /var/log/tunnels/funnel.log 2>&1", shell=True)
-time.sleep(3)
+def publish_funnel(wait=25):
+    """Publish port 8090 on the public Funnel, bounded. Returns the URL or ''.
 
-funnel_url = ""
-try:
-    f_stat = subprocess.run("tailscale funnel status 2>&1", shell=True, text=True, capture_output=True).stdout
-    m = re.search(r'https://[A-Za-z0-9.\-]+\.ts\.net', f_stat)
-    if m:
-        funnel_url = m.group(0).rstrip("/")
-    else:
-        s_raw = subprocess.run("tailscale status --json 2>/dev/null", shell=True, text=True, capture_output=True).stdout
-        dns_name = json.loads(s_raw).get("Self", {}).get("DNSName", "").rstrip(".")
-        if dns_name:
-            funnel_url = f"https://{dns_name}"
-except Exception:
-    pass
+    `tailscale funnel` blocks until the control plane acknowledges the serve
+    config; on a node that still needs login it never returns. Every call is
+    therefore time-boxed, and skipped entirely unless the node is authorized.
+    """
+    if ts_json(6).get("BackendState") != "Running":
+        log("Funnel skipped: node is not authorized yet.")
+        return ""
+    os.makedirs("/var/log/tunnels", exist_ok=True)
+    try:
+        subprocess.run("tailscale funnel --bg --yes 8090 > /var/log/tunnels/funnel.log 2>&1",
+                       shell=True, timeout=wait)
+    except subprocess.TimeoutExpired:
+        log(f"Funnel publish exceeded {wait}s (continuing).")
+    except Exception as exc:
+        log(f"Funnel publish error: {exc}")
+    for _ in range(10):
+        try:
+            f_stat = subprocess.run("tailscale funnel status 2>&1", shell=True, text=True,
+                                    capture_output=True, timeout=10).stdout
+        except Exception:
+            f_stat = ""
+        m = re.search(r'https://[A-Za-z0-9.\-]+\.ts\.net', f_stat)
+        if m:
+            return m.group(0).rstrip("/")
+        time.sleep(1)
+    dns_name = ts_json(6).get("Self", {}).get("DNSName", "").rstrip(".")
+    return f"https://{dns_name}" if dns_name else ""
+
+log("Publishing MoonlightWeb through Tailscale Funnel...")
+funnel_url = publish_funnel()
 
 # 5.9 Generate the one-time Access PIN for remote browsers (single-use per device)
 def mw_access_pin(generate_new=False):
@@ -1074,28 +1158,17 @@ subprocess.run(sunshine_user_cmd, shell=True)
 # 6. Final Publish Pass (Funnel + PIN) - guaranteed after Tailscale is up
 # -------------------------------------------------------------
 log("Final pass: publishing Funnel and issuing the web access PIN...")
-subprocess.run("tailscale funnel --bg --yes 8090 > /var/log/tunnels/funnel.log 2>&1", shell=True)
-time.sleep(2)
-
-try:
-    f_stat = subprocess.run("tailscale funnel status 2>&1", shell=True, text=True, capture_output=True).stdout
-    m = re.search(r'https://[A-Za-z0-9.\-]+\.ts\.net', f_stat)
-    if m:
-        funnel_url = m.group(0).rstrip("/")
-    elif not funnel_url:
-        s_raw = subprocess.run("tailscale status --json 2>/dev/null", shell=True, text=True, capture_output=True).stdout
-        dns_name = json.loads(s_raw).get("Self", {}).get("DNSName", "").rstrip(".")
-        if dns_name:
-            funnel_url = f"https://{dns_name}"
-except Exception:
-    pass
+_final_url = publish_funnel(wait=25)
+if _final_url:
+    funnel_url = _final_url
 
 # Always mint a brand-new single-use PIN at the end of setup
 fresh_pin = mw_access_pin(generate_new=True) or mw_access_pin(False)
 if fresh_pin:
     moonlight_pin = fresh_pin
 
-ts_ip_live = subprocess.run("tailscale ip -4 2>/dev/null || true", shell=True, text=True, capture_output=True).stdout.strip()
+ts_ip_live = subprocess.run("tailscale ip -4 2>/dev/null || true", shell=True, text=True,
+                            capture_output=True, timeout=10).stdout.strip()
 if ts_ip_live and " " not in ts_ip_live:
     ts_ip = ts_ip_live
 

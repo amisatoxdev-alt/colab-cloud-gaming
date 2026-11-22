@@ -35,13 +35,24 @@ try:
         links["tailscale_ip"] = ts_ip
         links["sunshine_direct_tailscale"] = f"https://{ts_ip}:47990"
     else:
-        # Check if there is an active login URL
+        # Check if there is an active login URL. NEVER pass --reset here: it
+        # discards the stored node identity and forces an already authenticated
+        # node back to login.tailscale.com on every single links probe.
         if not links.get("tailscale_login_url") or "login.tailscale.com" not in links.get("tailscale_login_url", ""):
-            up_proc = subprocess.run("tailscale up --operator=root --reset --accept-dns=false --timeout=3s 2>&1",
-                                     shell=True, text=True, capture_output=True)
-            m_auth = re.search(r'https://login\.tailscale\.com/a/[a-zA-Z0-9]+', up_proc.stdout + up_proc.stderr)
-            if m_auth:
-                links["tailscale_login_url"] = m_auth.group(0)
+            try:
+                st_json = json.loads(subprocess.run("tailscale status --json 2>/dev/null",
+                                                    shell=True, text=True,
+                                                    capture_output=True).stdout or "{}")
+            except Exception:
+                st_json = {}
+            if st_json.get("BackendState") != "Running":
+                up_proc = subprocess.run("tailscale up --operator=root --accept-dns=false --timeout=3s 2>&1",
+                                         shell=True, text=True, capture_output=True)
+                m_auth = re.search(r'https://login\.tailscale\.com/[^\s"\']+', up_proc.stdout + up_proc.stderr)
+                if m_auth:
+                    links["tailscale_login_url"] = m_auth.group(0)
+            else:
+                links["tailscale_login_url"] = ""
 except Exception:
     pass
 

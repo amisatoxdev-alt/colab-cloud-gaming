@@ -838,8 +838,9 @@ def check_and_wait_tailscale(ts_login_url):
     print(f"\n{C_CYAN}--- TAILSCALE MESH NETWORK STATUS ---{C_RESET}")
     res = run_exec("-f check_ts.py", idle_timeout=30)
 
-    if "STATUS:AUTHORIZED" in (res.stdout or ""):
-        lines = res.stdout.replace("STATUS:AUTHORIZED", "").strip().split("\n")
+    out = res.stdout or ""
+    if "STATUS:AUTHORIZED" in out:
+        lines = out.replace("STATUS:AUTHORIZED", "").strip().split("\n")
         first_line = lines[0] if lines else ""
         parts = first_line.split()
         ip = parts[0] if parts else "100.x.y.z"
@@ -847,35 +848,42 @@ def check_and_wait_tailscale(ts_login_url):
         return ip
 
     if not ts_login_url or "login.tailscale.com" not in ts_login_url:
-        m = re.search(r'https://login\.tailscale\.com/a/[a-zA-Z0-9]+', res.stdout or "")
+        m = re.search(r'https://login\.tailscale\.com/[^\s"\']+', out)
         if m:
             ts_login_url = m.group(0)
 
-    if ts_login_url and "login.tailscale.com" in ts_login_url:
-        print(f"  {C_YELLOW}Authorization Required:{C_RESET} {C_WHITE}{C_BOLD}{ts_login_url}{C_RESET}")
-        print(f"  {C_GRAY}Waiting for authentication approval (checks every 5s, up to 5 min)...{C_RESET}",
-              end="", flush=True)
-        # Each poll is bounded, so this can never hang even if one exec wedges.
-        # A single wedged poll previously blocked the launcher forever because
-        # run_cmd had no deadline; a dead poll is now just a skipped tick.
-        deadline = time.time() + 300
-        while time.time() < deadline:
-            time.sleep(5)
-            res = run_exec("-f check_ts.py", idle_timeout=25, retry_on_timeout=True)
-            if "STATUS:AUTHORIZED" in (res.stdout or ""):
-                lines = res.stdout.replace("STATUS:AUTHORIZED", "").strip().split("\n")
-                first_line = lines[0] if lines else ""
-                parts = first_line.split()
-                ip = parts[0] if parts else "100.x.y.z"
-                print(f"\n{C_GREEN}[✓] Authorized! Node IP: {C_BOLD}{ip}{C_RESET}")
-                return ip
-            if res.returncode == 124:
-                print(f"{C_YELLOW}!{C_RESET}", end="", flush=True)
-            else:
-                print(".", end="", flush=True)
-        print(f"\n{C_YELLOW}[!] Tailscale authorization timed out after 5 min.{C_RESET}")
-        print(f"  {C_GRAY}The desktop is already deployed — you can authorize at any "
-              f"time, then run /tailscale or /funnel.{C_RESET}")
+    if not ts_login_url or "login.tailscale.com" not in ts_login_url:
+        # The node is neither authorized nor offering a login URL (daemon still
+        # booting, or the probe was starved). Do NOT enter the 5-minute wait --
+        # that is what made every restart look "stuck on tailscale login".
+        log_warn("Tailscale daemon is not answering yet. Skipping the authorization wait.")
+        print(f"  {C_GRAY}Retry later with /tailscale once the node is up.{C_RESET}")
+        return None
+
+    print(f"  {C_YELLOW}Authorization Required:{C_RESET} {C_WHITE}{C_BOLD}{ts_login_url}{C_RESET}")
+    print(f"  {C_GRAY}Waiting for authentication approval (checks every 5s, up to 3 min)...{C_RESET}",
+          end="", flush=True)
+    # Each poll is bounded, so this can never hang even if one exec wedges.
+    # A single wedged poll previously blocked the launcher forever because
+    # run_cmd had no deadline; a dead poll is now just a skipped tick.
+    deadline = time.time() + 180
+    while time.time() < deadline:
+        time.sleep(5)
+        res = run_exec("-f check_ts.py", idle_timeout=25, retry_on_timeout=True)
+        if "STATUS:AUTHORIZED" in (res.stdout or ""):
+            lines = res.stdout.replace("STATUS:AUTHORIZED", "").strip().split("\n")
+            first_line = lines[0] if lines else ""
+            parts = first_line.split()
+            ip = parts[0] if parts else "100.x.y.z"
+            print(f"\n{C_GREEN}[✓] Authorized! Node IP: {C_BOLD}{ip}{C_RESET}")
+            return ip
+        if res.returncode == 124:
+            print(f"{C_YELLOW}!{C_RESET}", end="", flush=True)
+        else:
+            print(".", end="", flush=True)
+    print(f"\n{C_YELLOW}[!] Tailscale authorization timed out after 3 min.{C_RESET}")
+    print(f"  {C_GRAY}The desktop is already deployed — you can authorize at any "
+          f"time, then run /tailscale or /funnel.{C_RESET}")
     return None
 
 def make_card_row(label, val, val_color=C_WHITE, max_len=62):
@@ -1268,6 +1276,7 @@ def show_help():
         ("/gtav log", "Tail the GTA V installer log"),
         ("/gtav verify", "Prove T4 GPU + NVENC acceleration (no lavapipe)"),
         ("/tailscale", "Query Tailscale mesh state and node IP"),
+        ("/ts repair", "Self-heal a stuck Tailscale login / duplicate daemons"),
         ("/pulse", "Trigger an immediate 12MB VRAM PyTorch keep-alive"),
         ("/region", "Show the live zone taken from the runtime URL"),
         ("/region sg", "Stop + re-allocate until Singapore assigned"),
@@ -1447,9 +1456,21 @@ def main():
                 if fn_url:
                     latest_links['funnel_url'] = fn_url
             elif cmd in ["/tailscale", "/ts", "tailscale", "ts"]:
-                ts_ip = check_and_wait_tailscale(latest_links.get('tailscale_login_url'))
-                if ts_ip:
+                # /ts repair  -> full self-heal (kill duplicate daemons, re-auth
+                #                without --reset, republish funnel, refresh links)
+                if arg.lower() in ("repair", "fix", "reset", "heal"):
+                    log_step("TS", "Running Tailscale self-repair...")
+                    run_exec("-f fix_ts.py", capture=False, idle_timeout=60,
+                             hard_timeout=300, retry_on_timeout=False)
+                    fresh = get_links(verbose=False)
+                    if fresh:
+                        latest_links.update(fresh)
+                        ts_ip = fresh.get('tailscale_ip') or ts_ip
                     print_dashboard(latest_links, ts_ip)
+                else:
+                    ts_ip = check_and_wait_tailscale(latest_links.get('tailscale_login_url'))
+                    if ts_ip:
+                        print_dashboard(latest_links, ts_ip)
             elif cmd in ["/pulse", "pulse"]:
                 trigger_pulse()
             elif cmd in ["/gtav", "/gta", "gtav", "gta"]:
